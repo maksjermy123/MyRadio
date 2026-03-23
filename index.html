@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Радио</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161922;
+    --surface2: #1e2230;
+    --accent: #c9a96e;
+    --accent2: #e8c99a;
+    --text: #e8e4da;
+    --muted: #6b7080;
+    --border: rgba(201,169,110,0.15);
+    --active-glow: rgba(201,169,110,0.12);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Jost', sans-serif;
+    font-weight: 300;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Фоновый узор */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201,169,110,0.07) 0%, transparent 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 60px, rgba(201,169,110,0.02) 60px, rgba(201,169,110,0.02) 61px),
+      repeating-linear-gradient(90deg, transparent, transparent 60px, rgba(201,169,110,0.02) 60px, rgba(201,169,110,0.02) 61px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  #app { position: relative; z-index: 1; }
+
+  /* ЭКРАН ЗАГРУЗКИ */
+  #loading-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    z-index: 100;
+    transition: opacity 0.5s ease;
+  }
+  #loading-screen.hidden { opacity: 0; pointer-events: none; }
+
+  .loader-cross {
+    width: 40px;
+    height: 40px;
+    position: relative;
+  }
+  .loader-cross::before,
+  .loader-cross::after {
+    content: '';
+    position: absolute;
+    background: var(--accent);
+    border-radius: 2px;
+    animation: pulse-cross 1.5s ease-in-out infinite;
+  }
+  .loader-cross::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+  .loader-cross::after { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); animation-delay: 0.2s; }
+  @keyframes pulse-cross { 0%,100%{opacity:0.3} 50%{opacity:1} }
+
+  .loader-text {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 14px;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  /* ЭКРАН ОШИБКИ (не подписан) */
+  #denied-screen {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 32px;
+    text-align: center;
+    z-index: 100;
+  }
+  #denied-screen.visible { display: flex; }
+
+  .denied-icon {
+    width: 56px;
+    height: 56px;
+    border: 1.5px solid rgba(201,169,110,0.3);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    margin-bottom: 8px;
+  }
+  .denied-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .denied-text {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.6;
+    max-width: 280px;
+  }
+  .denied-btn {
+    margin-top: 8px;
+    padding: 12px 28px;
+    background: transparent;
+    border: 1.5px solid var(--accent);
+    color: var(--accent);
+    font-family: 'Jost', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 2px;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: background 0.2s, color 0.2s;
+  }
+  .denied-btn:hover { background: var(--accent); color: var(--bg); }
+
+  /* ОСНОВНОЙ КОНТЕНТ */
+  #main-screen { display: none; padding: 0 0 100px; }
+  #main-screen.visible { display: block; }
+
+  /* Шапка */
+  .header {
+    padding: 32px 24px 20px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .header-label {
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  .header-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 30px;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--text);
+    line-height: 1.1;
+  }
+
+  /* Сейчас играет */
+  .now-playing {
+    margin: 20px 24px 0;
+    padding: 16px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: none;
+  }
+  .now-playing.visible { display: block; }
+
+  .np-label {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .np-content {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .np-visualizer {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 24px;
+    flex-shrink: 0;
+  }
+  .np-bar {
+    width: 3px;
+    background: var(--accent);
+    border-radius: 1.5px;
+    animation: bar-bounce 0.8s ease-in-out infinite;
+  }
+  .np-bar:nth-child(1) { height: 40%; animation-delay: 0s; }
+  .np-bar:nth-child(2) { height: 100%; animation-delay: 0.15s; }
+  .np-bar:nth-child(3) { height: 60%; animation-delay: 0.3s; }
+  .np-bar:nth-child(4) { height: 80%; animation-delay: 0.1s; }
+  .np-bar:nth-child(5) { height: 45%; animation-delay: 0.25s; }
+  @keyframes bar-bounce {
+    0%,100% { transform: scaleY(0.4); opacity: 0.6; }
+    50% { transform: scaleY(1); opacity: 1; }
+  }
+  .np-bar.paused { animation-play-state: paused; }
+
+  .np-info { flex: 1; min-width: 0; }
+  .np-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .np-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .np-stop {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: border-color 0.2s, color 0.2s;
+    font-size: 12px;
+  }
+  .np-stop:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Разделитель секции */
+  .section-label {
+    padding: 24px 24px 10px;
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  /* Карточки радио */
+  .stations-list {
+    padding: 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .station-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: background 0.2s, border-color 0.2s, transform 0.15s;
+    position: relative;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .station-card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+    transform: scaleY(0);
+    transition: transform 0.2s;
+    transform-origin: center;
+  }
+
+  .station-card:active { transform: scale(0.98); }
+  .station-card.active {
+    background: var(--active-glow);
+    border-color: rgba(201,169,110,0.3);
+  }
+  .station-card.active::before { transform: scaleY(1); }
+
+  .station-icon {
+    width: 44px;
+    height: 44px;
+    background: var(--surface2);
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 20px;
+    border: 1px solid var(--border);
+  }
+
+  .station-info { flex: 1; min-width: 0; }
+  .station-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .station-desc {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .station-play-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border);
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: border-color 0.2s, background 0.2s;
+    pointer-events: none;
+  }
+
+  .station-card.active .station-play-btn {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .play-icon {
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 6px 0 6px 10px;
+    border-color: transparent transparent transparent var(--muted);
+    margin-left: 2px;
+    transition: border-color 0.2s;
+  }
+  .station-card.active .play-icon {
+    border-color: transparent transparent transparent var(--bg);
+  }
+
+  /* Нижний плеер (фиксированный) */
+  #bottom-player {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(13,15,20,0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px 20px;
+    display: none;
+    align-items: center;
+    gap: 14px;
+    z-index: 50;
+  }
+  #bottom-player.visible { display: flex; }
+
+  .bp-info { flex: 1; min-width: 0; }
+  .bp-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bp-status {
+    font-size: 10px;
+    color: var(--accent);
+    margin-top: 2px;
+    letter-spacing: 0.05em;
+  }
+
+  .bp-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.15s, opacity 0.2s;
+    flex-shrink: 0;
+  }
+  .bp-btn:active { transform: scale(0.92); }
+
+  .bp-play {
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+  .bp-play-icon {
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 7px 0 7px 12px;
+    border-color: transparent transparent transparent var(--bg);
+    margin-left: 3px;
+  }
+  .bp-pause-icon {
+    display: flex;
+    gap: 4px;
+  }
+  .bp-pause-icon span {
+    display: block;
+    width: 3px;
+    height: 14px;
+    background: var(--bg);
+    border-radius: 1.5px;
+  }
+
+  /* Полоска громкости */
+  .volume-row {
+    padding: 0 20px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: -4px;
+  }
+  .vol-icon { font-size: 14px; color: var(--muted); }
+  input[type=range] {
+    flex: 1;
+    height: 3px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--surface2);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: none;
+  }
+
+  /* Анимация появления карточек */
+  .station-card {
+    opacity: 0;
+    transform: translateY(10px);
+    animation: card-in 0.3s ease forwards;
+  }
+  .station-card:nth-child(1) { animation-delay: 0.05s; }
+  .station-card:nth-child(2) { animation-delay: 0.1s; }
+  .station-card:nth-child(3) { animation-delay: 0.15s; }
+  .station-card:nth-child(4) { animation-delay: 0.2s; }
+  .station-card:nth-child(5) { animation-delay: 0.25s; }
+  @keyframes card-in {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Статус загрузки аудио */
+  .station-card.loading .station-play-btn {
+    border-color: rgba(201,169,110,0.5);
+  }
+  .station-card.loading .play-icon {
+    border: none;
+    width: 12px;
+    height: 12px;
+    border-top: 2px solid var(--accent);
+    border-right: 2px solid transparent;
+    border-radius: 50%;
+    margin-left: 0;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Экран загрузки -->
+<div id="loading-screen">
+  <div class="loader-cross"></div>
+  <div class="loader-text">Проверка доступа</div>
+</div>
+
+<!-- Экран отказа -->
+<div id="denied-screen">
+  <div class="denied-icon">✦</div>
+  <div class="denied-title">Доступ закрыт</div>
+  <div class="denied-text">Радио доступно только подписчикам канала. Подпишитесь и возвращайтесь.</div>
+  <a href="https://t.me/Testovuj" class="denied-btn" target="_blank">Подписаться на канал</a>
+</div>
+
+<!-- Основной экран -->
+<div id="app">
+  <div id="main-screen">
+    <div class="header">
+      <div class="header-label">Прямой эфир</div>
+      <div class="header-title">Христианское радио</div>
+    </div>
+
+    <!-- Сейчас играет (inline блок) -->
+    <div class="now-playing" id="now-playing-block">
+      <div class="np-label">Сейчас играет</div>
+      <div class="np-content">
+        <div class="np-visualizer">
+          <div class="np-bar" id="bar1"></div>
+          <div class="np-bar" id="bar2"></div>
+          <div class="np-bar" id="bar3"></div>
+          <div class="np-bar" id="bar4"></div>
+          <div class="np-bar" id="bar5"></div>
+        </div>
+        <div class="np-info">
+          <div class="np-name" id="np-name">—</div>
+          <div class="np-sub" id="np-sub">Эфир</div>
+        </div>
+        <button class="np-stop" id="np-stop-btn" title="Остановить">■</button>
+      </div>
+    </div>
+
+    <div class="section-label">Выберите станцию</div>
+
+    <div class="stations-list" id="stations-list"></div>
+  </div>
+</div>
+
+<!-- Нижний плеер -->
+<div id="bottom-player">
+  <div class="bp-info">
+    <div class="bp-name" id="bp-name">—</div>
+    <div class="bp-status" id="bp-status">● В эфире</div>
+  </div>
+  <button class="bp-btn bp-play" id="bp-play-btn">
+    <div class="bp-play-icon" id="bp-play-icon"></div>
+  </button>
+</div>
+
+<audio id="audio-player" preload="none"></audio>
+
+<script>
+// ─── КОНФИГУРАЦИЯ ───────────────────────────────────────────
+const BACKEND_URL = 'https://ТВОЙ_BACKEND_URL.up.railway.app'; // ← заменим после деплоя
+const CHANNEL_USERNAME = '@Testovuj';
+
+const STATIONS = [
+  {
+    id: 'dwg',
+    name: 'DWG Radio',
+    desc: 'Христианское вещание',
+    icon: '✝️',
+    url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3'
+  },
+  {
+    id: 'golos1',
+    name: 'Голос Мира — Проповеди',
+    desc: 'МСЦ ЕХБ · Слово и поучение',
+    icon: '🕊️',
+    url: 'https://golosmira.com:8021/rgm.mp3'
+  },
+  {
+    id: 'golos2',
+    name: 'Голос Мира — Музыка',
+    desc: 'Христианские песнопения',
+    icon: '🎵',
+    url: 'https://golosmira.com:8021/music64.mp3'
+  },
+  {
+    id: 'golos3',
+    name: 'Голос Мира — Библия',
+    desc: 'Чтение Священного Писания',
+    icon: '📖',
+    url: 'https://golosmira.com:9022/Bible'
+  },
+  {
+    id: 'slovo',
+    name: 'Слово Благодати',
+    desc: 'Проповеди и богослужения',
+    icon: '🙏',
+    url: 'https://c13.radioboss.fm:18516/stream'
+  }
+];
+// ────────────────────────────────────────────────────────────
+
+const tg = window.Telegram?.WebApp;
+const audio = document.getElementById('audio-player');
+let currentStation = null;
+let isPlaying = false;
+
+// Инициализация Telegram WebApp
+if (tg) {
+  tg.ready();
+  tg.expand();
+  tg.setHeaderColor('#0d0f14');
+  tg.setBackgroundColor('#0d0f14');
+}
+
+// Рендер карточек
+function renderStations() {
+  const list = document.getElementById('stations-list');
+  list.innerHTML = '';
+  STATIONS.forEach(station => {
+    const card = document.createElement('div');
+    card.className = 'station-card';
+    card.dataset.id = station.id;
+    card.innerHTML = `
+      <div class="station-icon">${station.icon}</div>
+      <div class="station-info">
+        <div class="station-name">${station.name}</div>
+        <div class="station-desc">${station.desc}</div>
+      </div>
+      <div class="station-play-btn">
+        <div class="play-icon"></div>
+      </div>
+    `;
+    card.addEventListener('click', () => handleStationClick(station, card));
+    list.appendChild(card);
+  });
+}
+
+function handleStationClick(station, card) {
+  if (currentStation?.id === station.id) {
+    togglePlay();
+    return;
+  }
+  // Снимаем активность со всех карточек
+  document.querySelectorAll('.station-card').forEach(c => {
+    c.classList.remove('active', 'loading');
+  });
+  card.classList.add('loading');
+  playStation(station, card);
+}
+
+function playStation(station, card) {
+  audio.pause();
+  audio.src = station.url;
+  currentStation = station;
+
+  // Обновляем UI
+  document.getElementById('np-name').textContent = station.name;
+  document.getElementById('np-sub').textContent = station.desc;
+  document.getElementById('bp-name').textContent = station.name;
+  document.getElementById('now-playing-block').classList.add('visible');
+  document.getElementById('bottom-player').classList.add('visible');
+
+  audio.load();
+  const playPromise = audio.play();
+  if (playPromise) {
+    playPromise.then(() => {
+      isPlaying = true;
+      card.classList.remove('loading');
+      card.classList.add('active');
+      updatePlayButtons(true);
+    }).catch(err => {
+      card.classList.remove('loading');
+      console.error(err);
+    });
+  }
+}
+
+function togglePlay() {
+  if (!currentStation) return;
+  if (isPlaying) {
+    audio.pause();
+    isPlaying = false;
+    updatePlayButtons(false);
+    setBarsPlaying(false);
+  } else {
+    audio.play();
+    isPlaying = true;
+    updatePlayButtons(true);
+    setBarsPlaying(true);
+  }
+}
+
+function stopAll() {
+  audio.pause();
+  audio.src = '';
+  isPlaying = false;
+  currentStation = null;
+  document.querySelectorAll('.station-card').forEach(c => c.classList.remove('active', 'loading'));
+  document.getElementById('now-playing-block').classList.remove('visible');
+  document.getElementById('bottom-player').classList.remove('visible');
+  setBarsPlaying(false);
+}
+
+function updatePlayButtons(playing) {
+  const icon = document.getElementById('bp-play-icon');
+  if (playing) {
+    icon.innerHTML = '<div class="bp-pause-icon"><span></span><span></span></div>';
+    setBarsPlaying(true);
+  } else {
+    icon.className = 'bp-play-icon';
+    icon.innerHTML = '';
+    setBarsPlaying(false);
+  }
+}
+
+function setBarsPlaying(playing) {
+  for (let i = 1; i <= 5; i++) {
+    const bar = document.getElementById('bar' + i);
+    if (bar) {
+      if (playing) bar.classList.remove('paused');
+      else bar.classList.add('paused');
+    }
+  }
+}
+
+// Кнопки
+document.getElementById('np-stop-btn').addEventListener('click', stopAll);
+document.getElementById('bp-play-btn').addEventListener('click', togglePlay);
+
+// Аудио события
+audio.addEventListener('playing', () => {
+  isPlaying = true;
+  setBarsPlaying(true);
+  document.getElementById('bp-status').textContent = '● В эфире';
+});
+audio.addEventListener('waiting', () => {
+  document.getElementById('bp-status').textContent = '○ Загрузка...';
+});
+audio.addEventListener('error', () => {
+  document.getElementById('bp-status').textContent = '✕ Ошибка потока';
+});
+
+// ─── ПРОВЕРКА ПОДПИСКИ ───────────────────────────────────────
+async function checkSubscription() {
+  // Если нет Telegram WebApp — показываем контент (для тестирования в браузере)
+  if (!tg || !tg.initData) {
+    showMain();
+    return;
+  }
+
+  try {
+    const response = await fetch(`${BACKEND_URL}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ init_data: tg.initData })
+    });
+
+    if (!response.ok) throw new Error('Server error');
+    const data = await response.json();
+
+    if (data.allowed) {
+      showMain();
+    } else {
+      showDenied();
+    }
+  } catch (err) {
+    console.error('Verify error:', err);
+    // При ошибке сети — показываем контент (не блокируем пользователя из-за сбоя)
+    showMain();
+  }
+}
+
+function showMain() {
+  document.getElementById('loading-screen').classList.add('hidden');
+  setTimeout(() => {
+    document.getElementById('loading-screen').style.display = 'none';
+    document.getElementById('main-screen').classList.add('visible');
+  }, 500);
+}
+
+function showDenied() {
+  document.getElementById('loading-screen').classList.add('hidden');
+  setTimeout(() => {
+    document.getElementById('loading-screen').style.display = 'none';
+    document.getElementById('denied-screen').classList.add('visible');
+  }, 500);
+}
+
+// Запуск
+renderStations();
+checkSubscription();
+</script>
+</body>
+</html>
