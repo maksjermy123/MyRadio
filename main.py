@@ -6,7 +6,7 @@ import httpx
 from pydantic import BaseModel
 
 BOT_TOKEN = os.getenv("8210823079:AAG-AC-dpZliPtlpAqAovu67OXThc_gPAqE")  # токен бота
-CHANNEL_ID = os.getenv("-1002547160941")  # пример: @Testovuj
+CHANNEL_ID = os.getenv("@Testovuj")  # пример: @Testovuj
 
 logging.basicConfig(level=logging.INFO)
 
