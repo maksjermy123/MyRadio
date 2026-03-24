@@ -2,171 +2,109 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Радио</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Христианское Радио</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Nunito:wght@300;400;600;700&display=swap" rel="stylesheet">
-<style>
-:root {
-  --sky:#c8dff0;--sky2:#a8c8e0;--sky3:#7aaac8;
-  --green:#4a8e28;--green2:#3a7020;--green3:#d4ead8;
-  --orange:#e07820;--orange2:#f09030;--orange3:#fff0d8;
-  --trunk:#8b4a1a;--trunk2:#6b3410;
-  --cream:#f8f2e4;--cream2:#ede4cc;--cream3:#d8cdb0;
-  --bg:#eef6fb;--surface:#ffffff;--surface2:#f5f0e8;
-  --text:#2a1a08;--text2:#5a3a18;--muted:#8a6a48;
-  --border:rgba(139,74,26,0.12);--border2:rgba(139,74,26,0.22);
-}
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-html,body{height:100%;}
-body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;font-weight:400;min-height:100vh;overflow-x:hidden;}
-/* ── ЗАГРУЗКА ── */
-#loading-screen{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;z-index:200;transition:opacity 0.5s ease;}
-#loading-screen.hidden{opacity:0;pointer-events:none;}
-.loader-wrap{width:56px;height:56px;position:relative;display:flex;align-items:center;justify-content:center;}
-.loader-ring{position:absolute;inset:0;border:2px solid var(--green3);border-top-color:var(--green);border-radius:50%;animation:spin 1s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg);}}
-.loader-emoji{font-size:24px;}
-.loader-text{font-family:'Cormorant Garamond',serif;font-size:15px;font-style:italic;color:var(--muted);letter-spacing:0.06em;}
-/* ── ОТКАЗ ── */
-#denied-screen{display:none;position:fixed;inset:0;background:linear-gradient(180deg,var(--sky) 0%,var(--cream) 100%);flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:40px 28px;text-align:center;z-index:100;}
-#denied-screen.visible{display:flex;}
-.denied-img{font-size:52px;margin-bottom:4px;}
-.denied-title{font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:600;color:var(--trunk2);}
-.denied-line{width:50px;height:2px;background:linear-gradient(90deg,transparent,var(--orange),transparent);margin:2px auto;}
-.denied-text{font-size:14px;color:var(--text2);line-height:1.65;max-width:270px;font-weight:400;}
-.btn-subscribe{padding:14px 28px;background:var(--green);border:none;color:#fff;font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;letter-spacing:0.06em;border-radius:50px;cursor:pointer;text-decoration:none;display:block;width:100%;max-width:256px;text-align:center;transition:background 0.2s,transform 0.15s;box-shadow:0 4px 16px rgba(74,142,40,0.3);}
-.btn-subscribe:hover{background:var(--green2);}
-.btn-subscribe:active{transform:scale(0.97);}
-.btn-recheck{padding:14px 28px;background:var(--orange);border:none;color:#fff;font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;letter-spacing:0.06em;border-radius:50px;cursor:pointer;display:block;width:100%;max-width:256px;transition:opacity 0.2s,transform 0.15s;box-shadow:0 4px 16px rgba(224,120,32,0.3);}
-.btn-recheck:disabled{opacity:0.5;cursor:default;}
-.btn-recheck:hover:not(:disabled){opacity:0.9;}
-.btn-recheck:active:not(:disabled){transform:scale(0.97);}
-.recheck-msg{font-size:12px;color:var(--muted);min-height:16px;font-style:italic;}
-/* ── ОСНОВНОЙ ЭКРАН ── */
-#main-screen{display:none;padding-bottom:155px;}
-#main-screen.visible{display:block;}
-.header{background:linear-gradient(180deg,var(--sky) 0%,var(--sky2) 60%,var(--bg) 100%);padding:24px 20px 20px;position:relative;overflow:hidden;}
-.header-inner{position:relative;z-index:1;display:flex;align-items:flex-start;gap:12px;}
-.header-tree{font-size:52px;line-height:1;flex-shrink:0;filter:drop-shadow(0 2px 8px rgba(74,142,40,0.3));}
-.header-texts{flex:1;}
-.header-eyebrow{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:var(--sky3);margin-bottom:3px;font-weight:600;}
-.header-title{font-family:'Cormorant Garamond',serif;font-size:26px;font-weight:600;color:var(--trunk2);line-height:1.1;}
-.header-channel{font-family:'Cormorant Garamond',serif;font-size:22px;font-style:italic;color:var(--trunk);margin-top:3px;opacity:0.9;}
-.wave{width:100%;height:24px;background:linear-gradient(180deg,var(--bg) 0%,transparent 100%);margin-top:-2px;}
-.section-label{padding:4px 18px 10px;font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:var(--muted);font-weight:600;}
-.stations-list{padding:0 12px;display:flex;flex-direction:column;gap:8px;}
-.station-card{background:var(--surface);border:1.5px solid var(--border);border-radius:16px;padding:14px 14px;cursor:pointer;display:flex;align-items:center;gap:13px;transition:all 0.2s;position:relative;overflow:hidden;opacity:0;transform:translateY(10px);animation:card-in 0.35s ease forwards;box-shadow:0 2px 8px rgba(139,74,26,0.06);}
-.station-card:nth-child(1){animation-delay:0.05s;}
-.station-card:nth-child(2){animation-delay:0.10s;}
-.station-card:nth-child(3){animation-delay:0.15s;}
-.station-card:nth-child(4){animation-delay:0.20s;}
-.station-card:nth-child(5){animation-delay:0.25s;}
-@keyframes card-in{to{opacity:1;transform:translateY(0);}}
-.station-card:active{transform:scale(0.98);}
-.station-card.active{background:var(--orange3);border-color:var(--orange2);box-shadow:0 4px 16px rgba(224,120,32,0.15);}
-.station-icon{width:46px;height:46px;background:var(--green3);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:22px;transition:background 0.2s;border:1.5px solid rgba(74,142,40,0.15);}
-.station-card.active .station-icon{background:rgba(224,120,32,0.15);border-color:rgba(224,120,32,0.3);}
-.station-info{flex:1;min-width:0;}
-.station-name{font-size:16px;font-weight:700;color:var(--text);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.station-desc{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:400;}
-.station-track{font-size:12px;color:var(--green2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;font-style:italic;display:none;font-family:'Cormorant Garamond',serif;}
-.station-card.active .station-track{display:block;}
-.station-play-btn{width:38px;height:38px;border-radius:50%;border:2px solid var(--border2);background:transparent;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.2s;pointer-events:none;}
-.station-card.active .station-play-btn{border-color:var(--orange);background:var(--orange);box-shadow:0 2px 10px rgba(224,120,32,0.4);}
-.play-tri{width:0;height:0;border-style:solid;border-width:6px 0 6px 10px;border-color:transparent transparent transparent var(--muted);margin-left:3px;transition:border-color 0.2s;}
-.station-card.active .play-tri{border-color:transparent transparent transparent #fff;}
-.station-card.loading .station-play-btn{border-color:var(--orange2);}
-.station-card.loading .play-tri{border:none;width:14px;height:14px;border-top:2px solid var(--orange);border-right:2px solid transparent;border-radius:50%;margin-left:0;animation:spin 0.7s linear infinite;}
-#bottom-player{position:fixed;bottom:0;left:0;right:0;background:rgba(255,252,248,0.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:2px solid var(--border2);z-index:50;display:none;}
-#bottom-player.visible{display:block;}
-.bp-topline{height:3px;background:linear-gradient(90deg,var(--green2),var(--orange),var(--green2));}
-.bp-main{display:flex;align-items:center;gap:12px;padding:12px 16px 8px;}
-.bp-vis{display:flex;align-items:flex-end;gap:3px;height:24px;flex-shrink:0;}
-.bp-bar{width:3px;border-radius:2px;animation:bar-dance 0.9s ease-in-out infinite;}
-.bp-bar:nth-child(1){height:30%;background:var(--green);animation-delay:0s;}
-.bp-bar:nth-child(2){height:90%;background:var(--orange);animation-delay:0.18s;}
-.bp-bar:nth-child(3){height:55%;background:var(--sky3);animation-delay:0.35s;}
-.bp-bar:nth-child(4){height:75%;background:var(--orange2);animation-delay:0.12s;}
-.bp-bar:nth-child(5){height:35%;background:var(--green);animation-delay:0.28s;}
-@keyframes bar-dance{0%,100%{transform:scaleY(0.3);opacity:0.4;}50%{transform:scaleY(1);opacity:1;}}
-.bp-bar.paused{animation-play-state:paused !important;transform:scaleY(0.3) !important;opacity:0.3 !important;}
-.bp-info{flex:1;min-width:0;}
-.bp-name{font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.bp-track{font-size:12px;color:var(--green2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;font-family:'Cormorant Garamond',serif;font-style:italic;min-height:15px;}
-.bp-status{font-size:10px;color:var(--muted);margin-top:1px;letter-spacing:0.06em;}
-.bp-controls{display:flex;align-items:center;gap:8px;flex-shrink:0;}
-.bp-stop-btn{width:32px;height:32px;border-radius:50%;border:1.5px solid var(--border2);background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;transition:all 0.2s;}
-.bp-stop-btn:hover{border-color:var(--trunk);color:var(--trunk);}
-.bp-play-btn{width:44px;height:44px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--green),var(--orange));cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform 0.15s;flex-shrink:0;box-shadow:0 3px 14px rgba(74,142,40,0.35);}
-.bp-play-btn:active{transform:scale(0.92);}
-.bp-play-icon{width:0;height:0;border-style:solid;border-width:7px 0 7px 13px;border-color:transparent transparent transparent #fff;margin-left:3px;}
-.bp-pause-icon{display:flex;gap:4px;}
-.bp-pause-icon span{display:block;width:3px;height:14px;background:#fff;border-radius:2px;}
-.volume-row{display:flex;align-items:center;gap:10px;padding:2px 16px 14px;}
-.vol-icon{font-size:15px;flex-shrink:0;width:20px;text-align:center;cursor:pointer;user-select:none;}
-input[type=range].volume-slider{flex:1;height:4px;-webkit-appearance:none;appearance:none;background:var(--green3);border-radius:4px;outline:none;cursor:pointer;}
-input[type=range].volume-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,var(--green),var(--orange));cursor:pointer;box-shadow:0 1px 5px rgba(0,0,0,0.2);}
-input[type=range].volume-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,var(--green),var(--orange));cursor:pointer;border:none;}
-.vol-pct{font-size:11px;color:var(--muted);min-width:30px;text-align:right;font-weight:600;}
-/* ── Кнопка Поделиться под списком ── */
-.share-btn{padding:14px 28px;background:var(--green);border:none;color:#fff;font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;letter-spacing:0.06em;border-radius:50px;cursor:pointer;display:block;width:100%;max-width:256px;text-align:center;margin:16px auto;transition:background 0.2s,transform 0.15s;box-shadow:0 4px 16px rgba(74,142,40,0.3);}
-.share-btn:hover{background:var(--green2);}
-.share-btn:active{transform:scale(0.97);}
-</style>
+<link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
 <!-- Загрузка -->
 <div id="loading-screen">
-  <div class="loader-wrap">
-    <div class="loader-ring"></div>
-    <div class="loader-emoji">🌳</div>
-  </div>
-  <div class="loader-text">Проверка доступа...</div>
+  <div>🌳 Проверка доступа...</div>
 </div>
 
 <!-- Отказ -->
 <div id="denied-screen">
-  <div class="denied-img">🌳</div>
-  <div class="denied-title">Доступ закрыт</div>
-  <div class="denied-line"></div>
-  <div class="denied-text">Радио доступно только подписчикам канала «От чтения к преображению».</div>
-  <a href="https://t.me/Testovuj" class="btn-subscribe" target="_blank">🌿 Подписаться на канал</a>
-  <button class="btn-recheck" id="recheck-btn" onclick="recheckSubscription()">✓ Я подписался — проверить</button>
-  <div class="recheck-msg" id="recheck-msg"></div>
+  <div>🌳 Доступ закрыт</div>
+  <div>Подписка на канал обязательна</div>
+  <a id="subscribe-btn" href="https://t.me/ВашКанал" target="_blank">Подписаться</a>
+  <button onclick="recheckSubscription()">Я подписался — проверить</button>
+  <div id="recheck-msg"></div>
 </div>
 
 <!-- Основной экран -->
-<div id="app">
-  <div id="main-screen">
+<div id="main-screen">
+  <header>
+    <h1>Христианское радио</h1>
+    <h2>для канала «От чтения к преображению»</h2>
+  </header>
 
-    <div class="header">
-      <div class="header-inner">
-        <div class="header-tree">🌳</div>
-        <div class="header-texts">
-          <div class="header-eyebrow">Прямой эфир · Онлайн</div>
-          <div class="header-title">Христианское радио</div>
-          <div class="header-channel">для канала «От чтения к преображению»</div>
-        </div>
-      </div>
-    </div>
+  <section id="stations-list"></section>
 
-    <div class="section-label">Выберите станцию</div>
-    <div class="stations-list" id="stations-list"></div>
-
-    <!-- Кнопка Поделиться -->
-    <button class="share-btn" onclick="shareRadio()">↗ Поделиться</button>
-
-  </div>
+  <button class="share-btn" onclick="shareRadio()">↗ Поделиться</button>
 </div>
 
-<!-- Нижний плеер -->
-<div id="bottom-player">
-  <div class="bp-topline"></div>
-  <div class="bp-main">
-    <div class="bp-vis">
-      <div class="bp-bar" id="b1"></div>
-      <div class="bp-bar" id="b2"></div>
-      <
+<script>
+const TG = window.Telegram.WebApp;
+TG.expand();
+
+let user_id = TG.initDataUnsafe.user?.id;
+
+function showLoading(show=true){
+  document.getElementById("loading-screen").style.display = show ? "flex" : "none";
+}
+function showDenied(show=true){
+  document.getElementById("denied-screen").style.display = show ? "flex" : "none";
+}
+function showMain(show=true){
+  document.getElementById("main-screen").style.display = show ? "block" : "none";
+}
+
+async function checkSubscription() {
+  showLoading(true);
+  try {
+    const res = await fetch("/check_subscription", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({user_id})
+    });
+    const data = await res.json();
+    if(data.subscribed){
+      showMain(true);
+      showDenied(false);
+      renderStations(data.stations);
+    } else {
+      showDenied(true);
+      showMain(false);
+    }
+  } catch(e){
+    console.error(e);
+    alert("Ошибка проверки подписки");
+  } finally {
+    showLoading(false);
+  }
+}
+
+function recheckSubscription(){
+  document.getElementById("recheck-msg").innerText = "Проверка...";
+  checkSubscription();
+}
+
+function renderStations(stations){
+  const list = document.getElementById("stations-list");
+  list.innerHTML = "";
+  stations.forEach(st=>{
+    const div = document.createElement("div");
+    div.className = "station-card";
+    div.innerHTML = `<b>${st.name}</b><p>${st.desc}</p>`;
+    div.onclick = ()=>playStation(st);
+    list.appendChild(div);
+  });
+}
+
+let audio;
+function playStation(station){
+  if(audio) audio.pause();
+  audio = new Audio(station.url);
+  audio.play();
+}
+
+function shareRadio(){
+  TG.shareData({url: "https://ВашСайтСРадио.ru"});
+}
+
+checkSubscription();
+</script>
+</body>
+</html>
