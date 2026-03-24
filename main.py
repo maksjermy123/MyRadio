@@ -4,6 +4,10 @@ import hashlib
 import json
 import struct
 import re
+import ssl
+import socket
+import ipaddress
+import time
 from urllib.parse import unquote, parse_qsl
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,22 +16,36 @@ import httpx
 
 app = FastAPI()
 
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@Testovuj")
+INIT_DATA_MAX_AGE_SECONDS = int(
+    os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400")
+)
 
 
 class VerifyRequest(BaseModel):
     init_data: str
 
 
-def verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
+def verify_telegram_init_data(
+    init_data: str,
+    bot_token: str,
+    *,
+    max_age_seconds: int = 86400,
+) -> dict | None:
     parsed = dict(parse_qsl(init_data, keep_blank_values=True))
     received_hash = parsed.pop("hash", None)
     if not received_hash:
@@ -43,31 +61,85 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
     ).hexdigest()
     if not hmac.compare_digest(computed_hash, received_hash):
         return None
+
+    auth_date_raw = parsed.get("auth_date")
+    if not auth_date_raw:
+        return None
+    try:
+        auth_date = int(auth_date_raw)
+    except ValueError:
+        return None
+
+    now = int(time.time())
+    if max_age_seconds > 0 and (auth_date > now + 60 or now - auth_date > max_age_seconds):
+        return None
+
     user_data = parsed.get("user")
-    if user_data:
-        return json.loads(unquote(user_data))
-    return {}
+    if not user_data:
+        return None
+    try:
+        user = json.loads(unquote(user_data))
+    except json.JSONDecodeError:
+        return None
+
+    return {"user": user, "auth_date": auth_date}
+
+
+def _host_is_public(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+
+    if not infos:
+        return False
+
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False
+
+    return True
 
 
 async def fetch_icy_metadata(stream_url: str) -> str | None:
     """Читает ICY metadata из радиопотока."""
     try:
-        # Парсим хост и путь из URL
-        url_clean = stream_url.replace("https://", "").replace("http://", "")
-        parts = url_clean.split("/", 1)
-        host_port = parts[0]
-        path = "/" + parts[1] if len(parts) > 1 else "/"
+        from urllib.parse import urlparse
 
-        if ":" in host_port:
-            host, port_str = host_port.rsplit(":", 1)
-            port = int(port_str)
-        else:
-            host = host_port
-            port = 443 if stream_url.startswith("https") else 80
+        parsed_url = urlparse(stream_url)
+        if parsed_url.scheme not in {"http", "https"}:
+            return None
+        if not parsed_url.hostname:
+            return None
+
+        host = parsed_url.hostname
+        port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+        path = parsed_url.path or "/"
+        if parsed_url.query:
+            path += "?" + parsed_url.query
+
+        if not _host_is_public(host):
+            return None
 
         import asyncio
+        ssl_context = None
+        if parsed_url.scheme == "https":
+            ssl_context = ssl.create_default_context()
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port),
+            asyncio.open_connection(host, port, ssl=ssl_context, server_hostname=host if ssl_context else None),
             timeout=5.0
         )
 
@@ -161,27 +233,58 @@ async def get_metadata(url: str = Query(...)):
 async def verify(request: VerifyRequest):
     if not BOT_TOKEN:
         raise HTTPException(status_code=500, detail="BOT_TOKEN not configured")
+    if not CHANNEL_ID:
+        raise HTTPException(status_code=500, detail="CHANNEL_ID not configured")
 
-    user_data = verify_telegram_init_data(request.init_data, BOT_TOKEN)
-    if user_data is None:
+    if not request.init_data:
+        raise HTTPException(status_code=403, detail="Missing init data")
+
+    payload = verify_telegram_init_data(
+        request.init_data,
+        BOT_TOKEN,
+        max_age_seconds=INIT_DATA_MAX_AGE_SECONDS,
+    )
+    if payload is None:
         raise HTTPException(status_code=403, detail="Invalid init data")
 
-    user_id = user_data.get("id")
+    user = payload.get("user") or {}
+    user_id = user.get("id")
     if not user_id:
         raise HTTPException(status_code=403, detail="No user id")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
-            params={"chat_id": CHANNEL_ID, "user_id": user_id}
-        )
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
 
+        resp = None
+        for attempt in range(2):
+            resp = await client.get(
+                url,
+                params={"chat_id": CHANNEL_ID, "user_id": user_id},
+            )
+            if resp.status_code == 429 and attempt == 0:
+                try:
+                    retry_after = resp.json().get("parameters", {}).get("retry_after")
+                except Exception:
+                    retry_after = None
+                if isinstance(retry_after, int) and 0 < retry_after <= 2:
+                    import asyncio
+
+                    await asyncio.sleep(retry_after)
+                    continue
+            break
+
+    if resp is None:
+        return {"allowed": False, "reason": "telegram_api_no_response"}
     if resp.status_code != 200:
-        return {"allowed": True, "reason": "telegram_api_error"}
+        return {"allowed": False, "reason": f"telegram_api_http_{resp.status_code}"}
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except Exception:
+        return {"allowed": False, "reason": "telegram_api_bad_json"}
+
     if not data.get("ok"):
-        return {"allowed": False, "reason": "not_found"}
+        return {"allowed": False, "reason": data.get("description", "telegram_api_error")}
 
     status = data["result"].get("status", "")
     allowed_statuses = {"member", "administrator", "creator"}
