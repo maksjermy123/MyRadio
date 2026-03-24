@@ -853,7 +853,7 @@ document.getElementById('bp-stop-btn').addEventListener('click', stopAll);
 document.getElementById('bp-play-btn').addEventListener('click', togglePlay);
 
 async function checkSubscription() {
-  if (!tg || !tg.initData) { showMain(); return; }
+  if (!tg || !tg.initData) { showDenied(); return; }
   try {
     const res = await fetch(`${BACKEND_URL}/verify`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
