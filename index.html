@@ -870,7 +870,7 @@ async function checkSubscription() {
     const data = await res.json();
     data.allowed ? showMain() : showDenied();
   } catch {
-    showMain();
+    showDenied();
   }
 }
 
