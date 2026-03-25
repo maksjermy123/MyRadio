@@ -9,585 +9,128 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Nunito:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --sky:       #c8dff0;   /* небо из лого */
-  --sky2:      #a8c8e0;   /* небо темнее */
-  --sky3:      #7aaac8;   /* акцент неба */
-  --green:     #4a8e28;   /* зелень кроны */
-  --green2:    #3a7020;   /* тёмная зелень */
-  --green3:    #d4ead8;   /* светлая зелень фон */
-  --orange:    #e07820;   /* плоды */
-  --orange2:   #f09030;   /* светлее плоды */
-  --orange3:   #fff0d8;   /* очень светлый оранжевый */
-  --trunk:     #8b4a1a;   /* ствол */
-  --trunk2:    #6b3410;   /* тёмный ствол */
-  --cream:     #f8f2e4;   /* страницы Библии */
-  --cream2:    #ede4cc;   /* чуть темнее */
-  --cream3:    #d8cdb0;   /* граница */
-
-  --bg:        #eef6fb;   /* фон — светлое небо */
-  --surface:   #ffffff;   /* карточки */
-  --surface2:  #f5f0e8;   /* hover */
-
-  --text:      #2a1a08;   /* тёмно-коричневый текст */
-  --text2:     #5a3a18;   /* вторичный */
-  --muted:     #8a6a48;   /* приглушённый */
-  --border:    rgba(139,74,26,0.12);
-  --border2:   rgba(139,74,26,0.22);
+  --sky:     #c8dff0;
+  --sky2:    #a8c8e0;
+  --sky3:    #7aaac8;
+  --green:   #4a8e28;
+  --green2:  #3a7020;
+  --green3:  #d4ead8;
+  --orange:  #e07820;
+  --orange2: #f09030;
+  --orange3: #fff0d8;
+  --trunk:   #8b4a1a;
+  --trunk2:  #6b3410;
+  --bg:      #eef6fb;
+  --surface: #ffffff;
+  --text:    #2a1a08;
+  --text2:   #5a3a18;
+  --muted:   #8a6a48;
+  --border:  rgba(139,74,26,0.12);
+  --border2: rgba(139,74,26,0.22);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
+body { background: var(--bg); color: var(--text); font-family: 'Nunito', sans-serif; font-weight: 400; min-height: 100vh; overflow-x: hidden; }
 
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Nunito', sans-serif;
-  font-weight: 400;
-  min-height: 100vh;
-  overflow-x: hidden;
-}
-
-/* ── ЗАГРУЗКА ── */
-#loading-screen {
-  position: fixed; inset: 0;
-  background: var(--bg);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  z-index: 200;
-  transition: opacity 0.5s ease;
-}
+#loading-screen { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; z-index: 200; transition: opacity 0.5s ease; }
 #loading-screen.hidden { opacity: 0; pointer-events: none; }
-
-.loader-wrap {
-  width: 56px; height: 56px;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.loader-ring {
-  position: absolute; inset: 0;
-  border: 2px solid var(--green3);
-  border-top-color: var(--green);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
+.loader-wrap { width: 56px; height: 56px; position: relative; display: flex; align-items: center; justify-content: center; }
+.loader-ring { position: absolute; inset: 0; border: 2px solid var(--green3); border-top-color: var(--green); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loader-emoji { font-size: 24px; }
-.loader-text {
-  font-family: 'Cormorant Garamond', serif;
-  font-size: 15px;
-  font-style: italic;
-  color: var(--muted);
-  letter-spacing: 0.06em;
-}
+.loader-text { font-family: 'Cormorant Garamond', serif; font-size: 15px; font-style: italic; color: var(--muted); letter-spacing: 0.06em; }
 
-/* ── ОТКАЗ ── */
-#denied-screen {
-  display: none;
-  position: fixed; inset: 0;
-  background: linear-gradient(180deg, var(--sky) 0%, var(--cream) 100%);
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding: 40px 28px;
-  text-align: center;
-  z-index: 100;
-}
+#denied-screen { display: none; position: fixed; inset: 0; background: linear-gradient(180deg, var(--sky) 0%, #f8f2e4 100%); flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 40px 28px; text-align: center; z-index: 100; }
 #denied-screen.visible { display: flex; }
-
 .denied-img { font-size: 52px; margin-bottom: 4px; }
-.denied-title {
-  font-family: 'Cormorant Garamond', serif;
-  font-size: 28px;
-  font-weight: 600;
-  color: var(--trunk2);
-}
-.denied-line {
-  width: 50px; height: 2px;
-  background: linear-gradient(90deg, transparent, var(--orange), transparent);
-  margin: 2px auto;
-}
-.denied-text {
-  font-size: 14px;
-  color: var(--text2);
-  line-height: 1.65;
-  max-width: 270px;
-  font-weight: 400;
-}
-.btn-subscribe {
-  padding: 14px 28px;
-  background: var(--green);
-  border: none;
-  color: #fff;
-  font-family: 'Nunito', sans-serif;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  border-radius: 50px;
-  cursor: pointer;
-  text-decoration: none;
-  display: block;
-  width: 100%;
-  max-width: 256px;
-  text-align: center;
-  transition: background 0.2s, transform 0.15s;
-  box-shadow: 0 4px 16px rgba(74,142,40,0.3);
-}
+.denied-title { font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 600; color: var(--trunk2); }
+.denied-line { width: 50px; height: 2px; background: linear-gradient(90deg, transparent, var(--orange), transparent); margin: 2px auto; }
+.denied-text { font-size: 14px; color: var(--text2); line-height: 1.65; max-width: 270px; }
+.btn-subscribe { padding: 14px 28px; background: var(--green); border: none; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; border-radius: 50px; cursor: pointer; text-decoration: none; display: block; width: 100%; max-width: 256px; text-align: center; transition: background 0.2s; box-shadow: 0 4px 16px rgba(74,142,40,0.3); }
 .btn-subscribe:hover { background: var(--green2); }
-.btn-subscribe:active { transform: scale(0.97); }
-
-.btn-recheck {
-  padding: 14px 28px;
-  background: var(--orange);
-  border: none;
-  color: #fff;
-  font-family: 'Nunito', sans-serif;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  border-radius: 50px;
-  cursor: pointer;
-  display: block;
-  width: 100%;
-  max-width: 256px;
-  transition: opacity 0.2s, transform 0.15s;
-  box-shadow: 0 4px 16px rgba(224,120,32,0.3);
-}
+.btn-recheck { padding: 14px 28px; background: var(--orange); border: none; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; border-radius: 50px; cursor: pointer; display: block; width: 100%; max-width: 256px; transition: opacity 0.2s; box-shadow: 0 4px 16px rgba(224,120,32,0.3); }
 .btn-recheck:disabled { opacity: 0.5; cursor: default; }
-.btn-recheck:hover:not(:disabled) { opacity: 0.9; }
-.btn-recheck:active:not(:disabled) { transform: scale(0.97); }
-.recheck-msg {
-  font-size: 12px;
-  color: var(--muted);
-  min-height: 16px;
-  font-style: italic;
-}
+.recheck-msg { font-size: 12px; color: var(--muted); min-height: 16px; font-style: italic; }
 
-/* ── ОСНОВНОЙ ЭКРАН ── */
-#main-screen { display: none; padding-bottom: 155px; }
+#main-screen { display: none; padding-bottom: 165px; }
 #main-screen.visible { display: block; }
 
-/* Шапка */
-.header {
-  background: linear-gradient(180deg, var(--sky) 0%, var(--sky2) 60%, var(--bg) 100%);
-  padding: 24px 20px 20px;
-  position: relative;
-  overflow: hidden;
-}
-
-/* Облака */
-.header::before {
-  content: '';
-  position: absolute;
-  top: 8px; left: -20px;
-  width: 180px; height: 60px;
-  background: rgba(255,255,255,0.5);
-  border-radius: 50px;
-  filter: blur(12px);
-}
-.header::after {
-  content: '';
-  position: absolute;
-  top: 20px; right: -10px;
-  width: 140px; height: 45px;
-  background: rgba(255,255,255,0.4);
-  border-radius: 50px;
-  filter: blur(10px);
-}
-
-.header-inner {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-.header-tree {
-  font-size: 52px;
-  line-height: 1;
-  flex-shrink: 0;
-  filter: drop-shadow(0 2px 8px rgba(74,142,40,0.3));
-}
+.header { background: linear-gradient(180deg, var(--sky) 0%, var(--sky2) 60%, var(--bg) 100%); padding: 24px 20px 20px; position: relative; overflow: hidden; }
+.header::before { content: ''; position: absolute; top: 8px; left: -20px; width: 180px; height: 60px; background: rgba(255,255,255,0.5); border-radius: 50px; filter: blur(12px); }
+.header::after { content: ''; position: absolute; top: 20px; right: -10px; width: 140px; height: 45px; background: rgba(255,255,255,0.4); border-radius: 50px; filter: blur(10px); }
+.header-inner { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 12px; }
+.header-tree { font-size: 52px; line-height: 1; flex-shrink: 0; filter: drop-shadow(0 2px 8px rgba(74,142,40,0.3)); }
 .header-texts { flex: 1; }
-.header-eyebrow {
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--sky3);
-  margin-bottom: 3px;
-  font-weight: 600;
-}
-.header-title {
-  font-family: 'Cormorant Garamond', serif;
-  font-size: 26px;
-  font-weight: 600;
-  color: var(--trunk2);
-  line-height: 1.1;
-}
-.header-channel {
-  font-family: 'Cormorant Garamond', serif;
-  font-size: 22px;
-  font-style: italic;
-  color: var(--trunk);
-  margin-top: 3px;
-  opacity: 0.9;
-}
+.header-eyebrow { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--sky3); margin-bottom: 3px; font-weight: 600; }
+.header-title { font-family: 'Cormorant Garamond', serif; font-size: 26px; font-weight: 600; color: var(--trunk2); line-height: 1.1; }
+.header-channel { font-family: 'Cormorant Garamond', serif; font-size: 20px; font-style: italic; color: var(--trunk); margin-top: 3px; }
+.share-btn { border-radius: 50px; border: 2px solid rgba(74,142,40,0.35); background: rgba(255,255,255,0.75); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0; align-self: center; transition: all 0.2s; padding: 7px 12px; box-shadow: 0 2px 8px rgba(74,142,40,0.15); }
+.share-btn:active { transform: scale(0.95); }
+.share-icon { font-size: 15px; color: var(--green); line-height: 1; }
+.share-label { font-size: 12px; font-weight: 700; color: var(--green); letter-spacing: 0.04em; white-space: nowrap; }
+.share-toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--green); color: #fff; padding: 10px 20px; border-radius: 50px; font-size: 13px; font-weight: 600; white-space: nowrap; opacity: 0; transition: all 0.3s ease; z-index: 300; pointer-events: none; }
+.share-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-/* Волна между шапкой и контентом */
-.wave {
-  width: 100%;
-  height: 24px;
-  background: linear-gradient(180deg, var(--bg) 0%, transparent 100%);
-  margin-top: -2px;
-}
-
-/* Секция */
-.section-label {
-  padding: 4px 18px 10px;
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-/* Карточки */
-.stations-list {
-  padding: 0 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.station-card {
-  background: var(--surface);
-  border: 1.5px solid var(--border);
-  border-radius: 16px;
-  padding: 14px 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  transition: all 0.2s;
-  position: relative;
-  overflow: hidden;
-  opacity: 0;
-  transform: translateY(10px);
-  animation: card-in 0.35s ease forwards;
-  box-shadow: 0 2px 8px rgba(139,74,26,0.06);
-}
+.section-label { padding: 10px 18px 8px; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.stations-list { padding: 0 12px; display: flex; flex-direction: column; gap: 8px; }
+.station-card { background: var(--surface); border: 1.5px solid var(--border); border-radius: 16px; padding: 14px; cursor: pointer; display: flex; align-items: center; gap: 13px; transition: all 0.2s; box-shadow: 0 2px 8px rgba(139,74,26,0.06); opacity: 0; transform: translateY(10px); animation: card-in 0.35s ease forwards; }
 .station-card:nth-child(1) { animation-delay: 0.05s; }
 .station-card:nth-child(2) { animation-delay: 0.10s; }
 .station-card:nth-child(3) { animation-delay: 0.15s; }
 .station-card:nth-child(4) { animation-delay: 0.20s; }
 .station-card:nth-child(5) { animation-delay: 0.25s; }
 @keyframes card-in { to { opacity: 1; transform: translateY(0); } }
-
 .station-card:active { transform: scale(0.98); }
-.station-card.active {
-  background: var(--orange3);
-  border-color: var(--orange2);
-  box-shadow: 0 4px 16px rgba(224,120,32,0.15);
-}
-
-.station-icon {
-  width: 46px; height: 46px;
-  background: var(--green3);
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  font-size: 22px;
-  transition: background 0.2s;
-  border: 1.5px solid rgba(74,142,40,0.15);
-}
-.station-card.active .station-icon {
-  background: rgba(224,120,32,0.15);
-  border-color: rgba(224,120,32,0.3);
-}
-
+.station-card.active { background: var(--orange3); border-color: var(--orange2); box-shadow: 0 4px 16px rgba(224,120,32,0.15); }
+.station-icon { width: 46px; height: 46px; background: var(--green3); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; border: 1.5px solid rgba(74,142,40,0.15); flex-shrink: 0; transition: background 0.2s; }
+.station-card.active .station-icon { background: rgba(224,120,32,0.15); border-color: rgba(224,120,32,0.3); }
 .station-info { flex: 1; min-width: 0; }
-.station-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.station-desc {
-  font-size: 13px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 400;
-}
-.station-track {
-  font-size: 12px;
-  color: var(--green2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 3px;
-  font-style: italic;
-  font-family: 'Cormorant Garamond', serif;
-  display: none;
-  font-size: 13px;
-}
+.station-name { font-size: 16px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.station-desc { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.station-track { font-size: 13px; color: var(--green2); font-style: italic; font-family: 'Cormorant Garamond', serif; display: none; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .station-card.active .station-track { display: block; }
+.station-play-btn { width: 38px; height: 38px; border-radius: 50%; border: 2px solid var(--border2); background: transparent; display: flex; align-items: center; justify-content: center; flex-shrink: 0; pointer-events: none; transition: all 0.2s; }
+.station-card.active .station-play-btn { border-color: var(--orange); background: var(--orange); }
+.play-tri { width: 0; height: 0; border-style: solid; border-width: 6px 0 6px 10px; border-color: transparent transparent transparent var(--muted); margin-left: 3px; }
+.station-card.active .play-tri { border-color: transparent transparent transparent #fff; }
+.station-card.loading .play-tri { border: none; width: 14px; height: 14px; border-top: 2px solid var(--orange); border-right: 2px solid transparent; border-radius: 50%; margin-left: 0; animation: spin 0.7s linear infinite; }
 
-.station-play-btn {
-  width: 38px; height: 38px;
-  border-radius: 50%;
-  border: 2px solid var(--border2);
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: all 0.2s;
-  pointer-events: none;
-}
-.station-card.active .station-play-btn {
-  border-color: var(--orange);
-  background: var(--orange);
-  box-shadow: 0 2px 10px rgba(224,120,32,0.4);
-}
-.play-tri {
-  width: 0; height: 0;
-  border-style: solid;
-  border-width: 6px 0 6px 10px;
-  border-color: transparent transparent transparent var(--muted);
-  margin-left: 3px;
-  transition: border-color 0.2s;
-}
-.station-card.active .play-tri {
-  border-color: transparent transparent transparent #fff;
-}
-.station-card.loading .station-play-btn { border-color: var(--orange2); }
-.station-card.loading .play-tri {
-  border: none;
-  width: 14px; height: 14px;
-  border-top: 2px solid var(--orange);
-  border-right: 2px solid transparent;
-  border-radius: 50%;
-  margin-left: 0;
-  animation: spin 0.7s linear infinite;
-}
-
-/* ── НИЖНИЙ ПЛЕЕР ── */
-#bottom-player {
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
-  background: rgba(255,252,248,0.97);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-top: 2px solid var(--border2);
-  z-index: 50;
-  display: none;
-}
+#bottom-player { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(255,252,248,0.97); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 2px solid var(--border2); z-index: 50; display: none; }
 #bottom-player.visible { display: block; }
-
-/* Зелёная полоска сверху плеера */
-.bp-topline {
-  height: 3px;
-  background: linear-gradient(90deg, var(--green2), var(--orange), var(--green2));
-}
-
-.bp-main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px 8px;
-}
-
-.bp-vis {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 24px;
-  flex-shrink: 0;
-}
-.bp-bar {
-  width: 3px;
-  border-radius: 2px;
-  animation: bar-dance 0.9s ease-in-out infinite;
-}
+.bp-topline { height: 3px; background: linear-gradient(90deg, var(--green2), var(--orange), var(--green2)); }
+.bp-main { display: flex; align-items: center; gap: 12px; padding: 12px 16px 8px; }
+.bp-vis { display: flex; align-items: flex-end; gap: 3px; height: 24px; flex-shrink: 0; }
+.bp-bar { width: 3px; border-radius: 2px; animation: bar-dance 0.9s ease-in-out infinite; }
 .bp-bar:nth-child(1) { height: 30%; background: var(--green); animation-delay: 0s; }
 .bp-bar:nth-child(2) { height: 90%; background: var(--orange); animation-delay: 0.18s; }
 .bp-bar:nth-child(3) { height: 55%; background: var(--sky3); animation-delay: 0.35s; }
 .bp-bar:nth-child(4) { height: 75%; background: var(--orange2); animation-delay: 0.12s; }
 .bp-bar:nth-child(5) { height: 35%; background: var(--green); animation-delay: 0.28s; }
-@keyframes bar-dance {
-  0%,100% { transform: scaleY(0.3); opacity: 0.4; }
-  50% { transform: scaleY(1); opacity: 1; }
-}
-.bp-bar.paused { animation-play-state: paused; transform: scaleY(0.3) !important; opacity: 0.3 !important; }
-
+@keyframes bar-dance { 0%,100% { transform: scaleY(0.3); opacity: 0.4; } 50% { transform: scaleY(1); opacity: 1; } }
+.bp-bar.paused { animation-play-state: paused; transform: scaleY(0.3); opacity: 0.3; }
 .bp-info { flex: 1; min-width: 0; }
-.bp-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.bp-track {
-  font-size: 12px;
-  color: var(--green2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 1px;
-  font-family: 'Cormorant Garamond', serif;
-  font-style: italic;
-  min-height: 15px;
-}
-.bp-status {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 1px;
-  letter-spacing: 0.06em;
-}
-
-.bp-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.bp-stop-btn {
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  border: 1.5px solid var(--border2);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  transition: all 0.2s;
-}
+.bp-name { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bp-track { font-size: 12px; color: var(--green2); font-style: italic; font-family: 'Cormorant Garamond', serif; min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bp-status { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; }
+.bp-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.bp-stop-btn { width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; transition: all 0.2s; }
 .bp-stop-btn:hover { border-color: var(--trunk); color: var(--trunk); }
-
-.bp-play-btn {
-  width: 44px; height: 44px;
-  border-radius: 50%;
-  border: none;
-  background: linear-gradient(135deg, var(--green), var(--orange));
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.15s;
-  flex-shrink: 0;
-  box-shadow: 0 3px 14px rgba(74,142,40,0.35);
-}
+.bp-play-btn { width: 44px; height: 44px; border-radius: 50%; border: none; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 3px 14px rgba(74,142,40,0.35); transition: transform 0.15s; }
 .bp-play-btn:active { transform: scale(0.92); }
-.bp-play-icon {
-  width: 0; height: 0;
-  border-style: solid;
-  border-width: 7px 0 7px 13px;
-  border-color: transparent transparent transparent #fff;
-  margin-left: 3px;
-}
+.bp-play-icon { width: 0; height: 0; border-style: solid; border-width: 7px 0 7px 13px; border-color: transparent transparent transparent #fff; margin-left: 3px; }
 .bp-pause-icon { display: flex; gap: 4px; }
-.bp-pause-icon span {
-  display: block;
-  width: 3px; height: 14px;
-  background: #fff;
-  border-radius: 2px;
-}
-
-
-
-
-/* Тост уведомление */
-.share-toast {
-  position: fixed;
-  bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%) translateY(20px);
-  background: var(--green);
-  color: #fff;
-  padding: 10px 20px;
-  border-radius: 50px;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  opacity: 0;
-  transition: all 0.3s ease;
-  z-index: 300;
-  pointer-events: none;
-  box-shadow: 0 4px 16px rgba(74,142,40,0.4);
-}
-.share-toast.show {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
-/* Громкость (только Android) */
-.volume-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 2px 16px 14px;
-}
-.vol-icon {
-  font-size: 15px;
-  flex-shrink: 0;
-  width: 20px;
-  text-align: center;
-  cursor: pointer;
-  user-select: none;
-}
-input[type=range].volume-slider {
-  flex: 1;
-  height: 4px;
-  -webkit-appearance: none;
-  appearance: none;
-  background: var(--green3);
-  border-radius: 4px;
-  outline: none;
-  cursor: pointer;
-}
-input[type=range].volume-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--green), var(--orange));
-  cursor: pointer;
-  box-shadow: 0 1px 5px rgba(0,0,0,0.2);
-}
-input[type=range].volume-slider::-moz-range-thumb {
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--green), var(--orange));
-  cursor: pointer;
-  border: none;
-}
-.vol-pct {
-  font-size: 11px;
-  color: var(--muted);
-  min-width: 30px;
-  text-align: right;
-  font-weight: 600;
-}
+.bp-pause-icon span { display: block; width: 3px; height: 14px; background: #fff; border-radius: 2px; }
+.volume-row { display: flex; align-items: center; gap: 10px; padding: 2px 16px 14px; }
+.vol-icon { font-size: 15px; flex-shrink: 0; width: 20px; text-align: center; cursor: pointer; user-select: none; }
+input[type=range].volume-slider { flex: 1; height: 4px; -webkit-appearance: none; appearance: none; background: var(--green3); border-radius: 4px; outline: none; cursor: pointer; }
+input[type=range].volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; }
+input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; border: none; }
+.vol-pct { font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; font-weight: 600; }
 </style>
 </head>
 <body>
 
-<!-- Загрузка -->
 <div id="loading-screen">
   <div class="loader-wrap">
     <div class="loader-ring"></div>
@@ -596,22 +139,18 @@ input[type=range].volume-slider::-moz-range-thumb {
   <div class="loader-text">Проверка доступа...</div>
 </div>
 
-<!-- Отказ -->
 <div id="denied-screen">
   <div class="denied-img">🌳</div>
   <div class="denied-title">Доступ закрыт</div>
   <div class="denied-line"></div>
   <div class="denied-text" id="denied-text">Радио доступно только подписчикам канала «От чтения к преображению».</div>
-  <a href="https://t.me/Testovuj" class="btn-subscribe" target="_blank" id="subscribe-link">🌿 Подписаться на канал</a>
-  <a href="https://t.me/preoradio_bot/radio" class="btn-subscribe" target="_blank" id="open-telegram-link" style="display:none">🔐 Открыть в Telegram</a>
+  <a href="https://t.me/Testovuj" class="btn-subscribe" id="btn-subscribe" target="_blank">🌿 Подписаться на канал</a>
   <button class="btn-recheck" id="recheck-btn" onclick="recheckSubscription()">✓ Я подписался — проверить</button>
   <div class="recheck-msg" id="recheck-msg"></div>
 </div>
 
-<!-- Основной экран -->
 <div id="app">
   <div id="main-screen">
-
     <div class="header">
       <div class="header-inner">
         <div class="header-tree">🌳</div>
@@ -620,32 +159,18 @@ input[type=range].volume-slider::-moz-range-thumb {
           <div class="header-title">Христианское радио</div>
           <div class="header-channel">для канала «От чтения к преображению»</div>
         </div>
-
-      </div>
-    </div>
-
-    <div class="section-label">Выберите станцию</div>
-    <div class="stations-list" id="stations-list"></div>
-
-    <!-- Кнопка поделиться -->
-    <div style="padding: 8px 12px 24px;">
-      <div class="station-card share-card" onclick="shareRadio()" style="animation-delay:0.3s; background: linear-gradient(135deg, #f0faf0, #fff8f0); border-color: rgba(74,142,40,0.2);">
-        <div class="station-icon" style="background: linear-gradient(135deg, #d4ead8, #fff0d8); border-color: rgba(74,142,40,0.2); font-size:22px;">↗</div>
-        <div class="station-info">
-          <div class="station-name">Поделиться радио</div>
-          <div class="station-desc">Отправить ссылку другу в Telegram</div>
-        </div>
-        <div class="station-play-btn" style="border-color: rgba(74,142,40,0.3);">
-          <div style="font-size:16px; margin-left:1px;">→</div>
-        </div>
+        <button class="share-btn" onclick="shareRadio()">
+          <span class="share-icon">↗</span>
+          <span class="share-label">Поделиться</span>
+        </button>
       </div>
     </div>
     <div class="share-toast" id="share-toast">✓ Ссылка скопирована!</div>
-
+    <div class="section-label">Выберите станцию</div>
+    <div class="stations-list" id="stations-list"></div>
   </div>
 </div>
 
-<!-- Нижний плеер -->
 <div id="bottom-player">
   <div class="bp-topline"></div>
   <div class="bp-main">
@@ -678,25 +203,28 @@ input[type=range].volume-slider::-moz-range-thumb {
 <audio id="audio-player" preload="none"></audio>
 
 <script>
-const BACKEND_URL = 'https://myradio-rrsk.onrender.com';
-const BOT_WEBAPP_LINK = 'https://t.me/preoradio_bot/radio';
+var BACKEND_URL = 'https://myradio-rrsk.onrender.com';
+var BOT_LINK = 'https://t.me/preoradio_bot/radio';
 
-const STATIONS = [
-  { id: 'dwg',    name: 'DWG Radio',              desc: 'Христианское вещание',        icon: '✝️',  url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3' },
+var STATIONS = [
+  { id: 'dwg',    name: 'DWG Radio',              desc: 'Христианское вещание',        icon: '&#10011;&#65039;', url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3' },
   { id: 'golos1', name: 'Голос Мира — Проповеди', desc: 'МСЦ ЕХБ · Слово и поучение', icon: '🕊️', url: 'https://golosmira.com:8021/rgm.mp3' },
-  { id: 'golos2', name: 'Голос Мира — Музыка',    desc: 'Христианские песнопения',     icon: '🎵',  url: 'https://golosmira.com:8021/music64.mp3' },
-  { id: 'golos3', name: 'Голос Мира — Библия',    desc: 'Чтение Священного Писания',   icon: '📖',  url: 'https://golosmira.com:9022/Bible' },
-  { id: 'slovo',  name: 'Слово Благодати',        desc: 'Проповеди и богослужения',    icon: '🙏',  url: 'https://c13.radioboss.fm:18516/stream' }
+  { id: 'golos2', name: 'Голос Мира — Музыка',    desc: 'Христианские песнопения',     icon: '🎵', url: 'https://golosmira.com:8021/music64.mp3' },
+  { id: 'golos3', name: 'Голос Мира — Библия',    desc: 'Чтение Священного Писания',   icon: '📖', url: 'https://golosmira.com:9022/Bible' },
+  { id: 'slovo',  name: 'Слово Благодати',        desc: 'Проповеди и богослужения',    icon: '🙏', url: 'https://c13.radioboss.fm:18516/stream' }
 ];
 
-const tg = window.Telegram?.WebApp;
-const audio = document.getElementById('audio-player');
-let currentStation = null;
-let isPlaying = false;
-let isMuted = false;
-let prevVolume = 80;
-let metaInterval = null;
-let stationsRendered = false;
+var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+var audio = document.getElementById('audio-player');
+var currentStation = null;
+var isPlaying = false;
+var isMuted = false;
+var prevVolume = 80;
+var metaInterval = null;
+
+if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
+  document.getElementById('volume-row').style.display = 'none';
+}
 
 if (tg) {
   tg.ready();
@@ -705,35 +233,29 @@ if (tg) {
   tg.setBackgroundColor('#eef6fb');
 }
 
-// Скрываем громкость на iOS
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-if (isIOS) document.getElementById('volume-row').style.display = 'none';
-
 function renderStations() {
-  if (stationsRendered) return;
-  stationsRendered = true;
-  const list = document.getElementById('stations-list');
+  var list = document.getElementById('stations-list');
   list.innerHTML = '';
-  STATIONS.forEach(s => {
-    const card = document.createElement('div');
+  STATIONS.forEach(function(s) {
+    var card = document.createElement('div');
     card.className = 'station-card';
     card.dataset.id = s.id;
-    card.innerHTML = `
-      <div class="station-icon">${s.icon}</div>
-      <div class="station-info">
-        <div class="station-name">${s.name}</div>
-        <div class="station-desc">${s.desc}</div>
-        <div class="station-track" id="track-${s.id}"></div>
-      </div>
-      <div class="station-play-btn"><div class="play-tri"></div></div>`;
-    card.addEventListener('click', () => handleClick(s, card));
+    card.innerHTML =
+      '<div class="station-icon">' + s.icon + '</div>' +
+      '<div class="station-info">' +
+        '<div class="station-name">' + s.name + '</div>' +
+        '<div class="station-desc">' + s.desc + '</div>' +
+        '<div class="station-track" id="track-' + s.id + '"></div>' +
+      '</div>' +
+      '<div class="station-play-btn"><div class="play-tri"></div></div>';
+    card.addEventListener('click', function() { handleClick(s, card); });
     list.appendChild(card);
   });
 }
 
 function handleClick(station, card) {
-  if (currentStation?.id === station.id) { togglePlay(); return; }
-  document.querySelectorAll('.station-card').forEach(c => c.classList.remove('active','loading'));
+  if (currentStation && currentStation.id === station.id) { togglePlay(); return; }
+  document.querySelectorAll('.station-card').forEach(function(c) { c.classList.remove('active','loading'); });
   card.classList.add('loading');
   playStation(station, card);
 }
@@ -746,15 +268,19 @@ function playStation(station, card) {
   currentStation = station;
   document.getElementById('bp-name').textContent = station.name;
   document.getElementById('bp-track').textContent = '';
+  document.getElementById('bp-status').textContent = '○ загрузка...';
   document.getElementById('bottom-player').classList.add('visible');
   audio.load();
-  audio.play().then(() => {
+  audio.play().then(function() {
     isPlaying = true;
     card.classList.remove('loading');
     card.classList.add('active');
     updatePlayBtn(true);
     startMetaPolling(station);
-  }).catch(() => card.classList.remove('loading'));
+  }).catch(function() {
+    card.classList.remove('loading');
+    document.getElementById('bp-status').textContent = '✕ ошибка потока';
+  });
 }
 
 function togglePlay() {
@@ -769,14 +295,14 @@ function togglePlay() {
 function stopAll() {
   audio.pause(); audio.src = ''; isPlaying = false; currentStation = null;
   stopMetaPolling();
-  document.querySelectorAll('.station-card').forEach(c => c.classList.remove('active','loading'));
-  document.querySelectorAll('.station-track').forEach(t => t.textContent = '');
+  document.querySelectorAll('.station-card').forEach(function(c) { c.classList.remove('active','loading'); });
+  document.querySelectorAll('.station-track').forEach(function(t) { t.textContent = ''; });
   document.getElementById('bottom-player').classList.remove('visible');
   setBars(false);
 }
 
 function updatePlayBtn(playing) {
-  const icon = document.getElementById('bp-play-icon');
+  var icon = document.getElementById('bp-play-icon');
   if (playing) {
     icon.outerHTML = '<div class="bp-pause-icon" id="bp-play-icon"><span></span><span></span></div>';
     setBars(true);
@@ -787,14 +313,14 @@ function updatePlayBtn(playing) {
 }
 
 function setBars(on) {
-  for (let i = 1; i <= 5; i++) {
-    const b = document.getElementById('b' + i);
-    if (b) on ? b.classList.remove('paused') : b.classList.add('paused');
+  for (var i = 1; i <= 5; i++) {
+    var b = document.getElementById('b' + i);
+    if (b) { on ? b.classList.remove('paused') : b.classList.add('paused'); }
   }
 }
 
 function setVolume(val) {
-  const v = parseInt(val);
+  var v = parseInt(val);
   audio.volume = v / 100; audio.muted = false; isMuted = false;
   document.getElementById('vol-pct').textContent = v + '%';
   document.getElementById('vol-icon').textContent = v === 0 ? '🔇' : v < 40 ? '🔉' : '🔊';
@@ -806,62 +332,131 @@ function toggleMute() {
     document.getElementById('vol-slider').value = prevVolume;
     setVolume(prevVolume);
   } else {
-    isMuted = true;
-    prevVolume = document.getElementById('vol-slider').value;
+    isMuted = true; prevVolume = document.getElementById('vol-slider').value;
     audio.muted = true;
     document.getElementById('vol-pct').textContent = '0%';
     document.getElementById('vol-icon').textContent = '🔇';
   }
 }
 
-async function fetchMeta(station) {
-  try {
-    const res = await fetch(`${BACKEND_URL}/metadata?url=${encodeURIComponent(station.url)}`,
-      { signal: AbortSignal.timeout(6000) });
-    const data = await res.json();
-    if (data.available && data.title) {
-      const el = document.getElementById('track-' + station.id);
-      if (el) el.textContent = '♪ ' + data.title;
-      document.getElementById('bp-track').textContent = '♪ ' + data.title;
-    }
-  } catch {}
+function fetchMeta(station) {
+  fetch(BACKEND_URL + '/metadata?url=' + encodeURIComponent(station.url))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.title) {
+        var el = document.getElementById('track-' + station.id);
+        if (el) el.textContent = '♪ ' + d.title;
+        document.getElementById('bp-track').textContent = '♪ ' + d.title;
+      }
+    })
+    .catch(function() {});
 }
 
-function startMetaPolling(station) { fetchMeta(station); metaInterval = setInterval(() => fetchMeta(station), 15000); }
-function stopMetaPolling() { if (metaInterval) { clearInterval(metaInterval); metaInterval = null; } }
+function startMetaPolling(station) {
+  fetchMeta(station);
+  metaInterval = setInterval(function() { fetchMeta(station); }, 30000);
+}
+function stopMetaPolling() {
+  if (metaInterval) { clearInterval(metaInterval); metaInterval = null; }
+}
 
-audio.addEventListener('playing', () => { isPlaying = true; setBars(true); document.getElementById('bp-status').textContent = '● в эфире'; });
-audio.addEventListener('waiting', () => { document.getElementById('bp-status').textContent = '○ загрузка...'; });
-audio.addEventListener('error',   () => { document.getElementById('bp-status').textContent = '✕ ошибка потока'; });
-audio.addEventListener('pause',   () => { document.getElementById('bp-status').textContent = '⏸ пауза'; });
+audio.addEventListener('playing', function() { isPlaying = true; setBars(true); document.getElementById('bp-status').textContent = '● в эфире'; });
+audio.addEventListener('waiting', function() { document.getElementById('bp-status').textContent = '○ загрузка...'; });
+audio.addEventListener('error',   function() { document.getElementById('bp-status').textContent = '✕ ошибка потока'; });
+audio.addEventListener('pause',   function() { document.getElementById('bp-status').textContent = '⏸ пауза'; });
 
 document.getElementById('bp-stop-btn').addEventListener('click', stopAll);
 document.getElementById('bp-play-btn').addEventListener('click', togglePlay);
 
-async function checkSubscription() {
-  if (!tg || !tg.initData) { showDenied('no_telegram'); return; }
-  try {
-    const res = await fetch(`${BACKEND_URL}/verify`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ init_data: tg.initData })
-    });
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    data.allowed ? showMain() : showDenied('not_subscribed');
-  } catch { showDenied('api_error'); }
+function shareRadio() {
+  var shareUrl = BOT_LINK;
+  var shareText = '🌳 Христианское радио прямо в Telegram — DWG Radio, Голос Мира, Слово Благодати. Бесплатно, без рекламы.';
+  if (tg && tg.openTelegramLink) {
+    tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(shareUrl) + '&text=' + encodeURIComponent(shareText));
+  } else {
+    navigator.clipboard.writeText(shareUrl).then(function() { showToast('Ссылка скопирована!'); }).catch(function() {});
+  }
 }
 
-async function recheckSubscription() {
-  if (!tg || !tg.initData) { showDenied('no_telegram'); return; }
-  const btn = document.getElementById('recheck-btn');
-  const msg = document.getElementById('recheck-msg');
+function showToast(msg) {
+  var toast = document.getElementById('share-toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(function() { toast.classList.remove('show'); }, 2500);
+}
+
+function showMain() {
+  renderStations();
+  document.getElementById('loading-screen').classList.add('hidden');
+  setTimeout(function() {
+    document.getElementById('loading-screen').style.display = 'none';
+    document.getElementById('main-screen').classList.add('visible');
+  }, 500);
+}
+
+function showDenied(reason) {
+  var text = document.getElementById('denied-text');
+  var btn = document.getElementById('btn-subscribe');
+  var recheck = document.getElementById('recheck-btn');
+
+  if (reason === 'no_telegram') {
+    text.textContent = 'Откройте радио через Telegram — нажмите кнопку ниже.';
+    btn.textContent = '📱 Открыть в Telegram';
+    btn.href = BOT_LINK;
+    recheck.style.display = 'none';
+  } else {
+    text.textContent = 'Радио доступно только подписчикам канала «От чтения к преображению».';
+    btn.textContent = '🌿 Подписаться на канал';
+    btn.href = 'https://t.me/Testovuj';
+    recheck.style.display = 'block';
+  }
+
+  document.getElementById('loading-screen').classList.add('hidden');
+  setTimeout(function() {
+    document.getElementById('loading-screen').style.display = 'none';
+    document.getElementById('denied-screen').classList.add('visible');
+  }, 500);
+}
+
+function checkSubscription() {
+  if (!tg) { showDenied('no_telegram'); return; }
+  if (!tg.initData || tg.initData === '') { showDenied('no_data'); return; }
+
+  fetch(BACKEND_URL + '/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ init_data: tg.initData })
+  })
+  .then(function(res) {
+    if (!res.ok) throw new Error('server_error');
+    return res.json();
+  })
+  .then(function(data) {
+    if (data.allowed) { showMain(); } else { showDenied('not_subscribed'); }
+  })
+  .catch(function() {
+    showDenied('error');
+  });
+}
+
+function recheckSubscription() {
+  var btn = document.getElementById('recheck-btn');
+  var msg = document.getElementById('recheck-msg');
   btn.disabled = true; btn.textContent = '⏳ Проверяю...'; msg.textContent = '';
-  try {
-    const res = await fetch(`${BACKEND_URL}/verify`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ init_data: tg.initData })
-    });
-    const data = await res.json();
+
+  if (!tg || !tg.initData || tg.initData === '') {
+    msg.textContent = 'Откройте радио через Telegram.';
+    btn.disabled = false; btn.textContent = '✓ Я подписался — проверить';
+    return;
+  }
+
+  fetch(BACKEND_URL + '/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ init_data: tg.initData })
+  })
+  .then(function(res) { return res.json(); })
+  .then(function(data) {
     if (data.allowed) {
       document.getElementById('denied-screen').classList.remove('visible');
       showMain();
@@ -869,83 +464,11 @@ async function recheckSubscription() {
       msg.textContent = 'Подписка не найдена. Попробуйте ещё раз.';
       btn.disabled = false; btn.textContent = '✓ Я подписался — проверить';
     }
-  } catch {
+  })
+  .catch(function() {
     msg.textContent = 'Ошибка соединения. Попробуйте ещё раз.';
     btn.disabled = false; btn.textContent = '✓ Я подписался — проверить';
-  }
-}
-
-function showMain() {
-  renderStations();
-  document.getElementById('loading-screen').classList.add('hidden');
-  setTimeout(() => {
-    document.getElementById('loading-screen').style.display = 'none';
-    document.getElementById('main-screen').classList.add('visible');
-  }, 500);
-}
-
-function showDenied(mode) {
-  const deniedText = document.getElementById('denied-text');
-  const subscribeLink = document.getElementById('subscribe-link');
-  const openTelegramLink = document.getElementById('open-telegram-link');
-  const recheckBtn = document.getElementById('recheck-btn');
-  const msg = document.getElementById('recheck-msg');
-  msg.textContent = '';
-
-  if (openTelegramLink) openTelegramLink.href = BOT_WEBAPP_LINK;
-
-  if (mode === 'no_telegram') {
-    deniedText.textContent = 'Откройте радио через Telegram, затем пройдите проверку подписки.';
-    subscribeLink.style.display = 'none';
-    recheckBtn.style.display = 'none';
-    openTelegramLink.style.display = 'inline-block';
-  } else if (mode === 'api_error') {
-    deniedText.textContent = 'Не удалось проверить подписку. Откройте радио через Telegram и попробуйте ещё раз.';
-    subscribeLink.style.display = 'none';
-    recheckBtn.style.display = 'none';
-    openTelegramLink.style.display = 'inline-block';
-  } else {
-    deniedText.textContent = 'Радио доступно только подписчикам канала «От чтения к преображению».';
-    subscribeLink.style.display = 'inline-block';
-    recheckBtn.style.display = 'inline-block';
-    openTelegramLink.style.display = 'none';
-  }
-
-  document.getElementById('loading-screen').classList.add('hidden');
-  setTimeout(() => {
-    document.getElementById('loading-screen').style.display = 'none';
-    document.getElementById('denied-screen').classList.add('visible');
-  }, 500);
-}
-
-
-function shareRadio() {
-  const shareText = '🌳 Христианское радио — слушай прямо в Telegram!\n\nDWG Radio, Голос Мира, Слово Благодати и другие станции — бесплатно, без рекламы.';
-  const shareUrl = BOT_WEBAPP_LINK;
-
-  if (tg && tg.shareUrl) {
-    // Telegram WebApp API — самый красивый способ
-    tg.shareUrl(shareUrl, shareText);
-  } else if (tg && tg.openTelegramLink) {
-    // Fallback через t.me/share
-    const encoded = encodeURIComponent(shareUrl);
-    const textEncoded = encodeURIComponent(shareText);
-    tg.openTelegramLink('https://t.me/share/url?url=' + encoded + '&text=' + textEncoded);
-  } else {
-    // Для браузера — копируем ссылку
-    navigator.clipboard.writeText(shareUrl).then(() => {
-      showToast('✓ Ссылка скопирована!');
-    }).catch(() => {
-      showToast('📋 ' + shareUrl);
-    });
-  }
-}
-
-function showToast(msg) {
-  const toast = document.getElementById('share-toast');
-  toast.textContent = msg;
-  toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 2500);
+  });
 }
 
 checkSubscription();
