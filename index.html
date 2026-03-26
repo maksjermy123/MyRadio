@@ -270,33 +270,59 @@ function handleClick(station, card) {
 }
 
 function playStation(station, card) {
+  // Останавливаем текущий поток
   audio.pause();
   stopMetaPolling();
-  audio.src = '';
-  audio.load();
-  audio.src = station.url;
-  if (station.url.indexOf('.mp3') !== -1 || station.url.indexOf('stream') !== -1) {
-    audio.setAttribute('type', 'audio/mpeg');
-  } else {
-    audio.setAttribute('type', 'audio/mpeg');
-  }
-  audio.volume = parseInt(document.getElementById('vol-slider').value) / 100;
+
+  // Обновляем UI немедленно
   currentStation = station;
   document.getElementById('bp-name').textContent = station.name;
   document.getElementById('bp-track').textContent = '';
   document.getElementById('bp-status').textContent = '○ загрузка...';
   document.getElementById('bottom-player').classList.add('visible');
-  audio.load();
-  audio.play().then(function() {
+
+  // Устанавливаем громкость
+  audio.volume = parseInt(document.getElementById('vol-slider').value) / 100;
+
+  // ВАЖНО для Android: вызываем play() синхронно в обработчике жеста
+  // Сначала сбрасываем src чтобы остановить буферизацию
+  audio.src = '';
+  audio.src = station.url;
+
+  // play() должен быть вызван напрямую без промежуточных async операций
+  var playPromise = audio.play();
+
+  if (playPromise !== undefined) {
+    playPromise.then(function() {
+      isPlaying = true;
+      card.classList.remove('loading');
+      card.classList.add('active');
+      updatePlayBtn(true);
+      startMetaPolling(station);
+    }).catch(function(err) {
+      // Если первая попытка не удалась — пробуем ещё раз через 300мс
+      console.log('Play failed, retrying:', err);
+      setTimeout(function() {
+        audio.play().then(function() {
+          isPlaying = true;
+          card.classList.remove('loading');
+          card.classList.add('active');
+          updatePlayBtn(true);
+          startMetaPolling(station);
+        }).catch(function() {
+          card.classList.remove('loading');
+          document.getElementById('bp-status').textContent = '✕ ошибка потока';
+        });
+      }, 300);
+    });
+  } else {
+    // Старые браузеры без Promise
     isPlaying = true;
     card.classList.remove('loading');
     card.classList.add('active');
     updatePlayBtn(true);
     startMetaPolling(station);
-  }).catch(function() {
-    card.classList.remove('loading');
-    document.getElementById('bp-status').textContent = '✕ ошибка потока';
-  });
+  }
 }
 
 function togglePlay() {
