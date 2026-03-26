@@ -65,10 +65,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Nunito', sans-se
 .header-eyebrow { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--sky3); margin-bottom: 3px; font-weight: 600; }
 .header-title { font-family: 'Cormorant Garamond', serif; font-size: 26px; font-weight: 600; color: var(--trunk2); line-height: 1.1; }
 .header-channel { font-family: 'Cormorant Garamond', serif; font-size: 20px; font-style: italic; color: var(--trunk); margin-top: 3px; }
-.share-btn { border-radius: 50px; border: 2px solid rgba(74,142,40,0.35); background: rgba(255,255,255,0.75); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0; align-self: center; transition: all 0.2s; padding: 7px 12px; box-shadow: 0 2px 8px rgba(74,142,40,0.15); }
-.share-btn:active { transform: scale(0.95); }
-.share-icon { font-size: 15px; color: var(--green); line-height: 1; }
-.share-label { font-size: 12px; font-weight: 700; color: var(--green); letter-spacing: 0.04em; white-space: nowrap; }
+
 .share-toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--green); color: #fff; padding: 10px 20px; border-radius: 50px; font-size: 13px; font-weight: 600; white-space: nowrap; opacity: 0; transition: all 0.3s ease; z-index: 300; pointer-events: none; }
 .share-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
@@ -127,6 +124,9 @@ input[type=range].volume-slider { flex: 1; height: 4px; -webkit-appearance: none
 input[type=range].volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; }
 input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; border: none; }
 .vol-pct { font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; font-weight: 600; }
+.share-card { background: #d8ecd0; border: 1.5px solid rgba(74,142,40,0.25); border-radius: 16px; padding: 14px; cursor: pointer; display: flex; align-items: center; gap: 13px; transition: all 0.2s; box-shadow: 0 2px 8px rgba(74,142,40,0.08); margin-top: 8px; }
+.share-card:active { transform: scale(0.98); background: #c8e0c0; }
+.share-card-icon { width: 46px; height: 46px; background: rgba(74,142,40,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; border: 1.5px solid rgba(74,142,40,0.2); flex-shrink: 0; color: var(--green); font-weight: 700; }
 </style>
 </head>
 <body>
@@ -159,15 +159,24 @@ input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; b
           <div class="header-title">Христианское радио</div>
           <div class="header-channel">для канала «От чтения к преображению»</div>
         </div>
-        <button class="share-btn" onclick="shareRadio()">
-          <span class="share-icon">↗</span>
-          <span class="share-label">Поделиться</span>
-        </button>
+
       </div>
     </div>
     <div class="share-toast" id="share-toast">✓ Ссылка скопирована!</div>
     <div class="section-label">Выберите станцию</div>
     <div class="stations-list" id="stations-list"></div>
+    <div style="padding: 0 12px 24px;">
+      <div class="share-card" onclick="shareRadio()">
+        <div class="share-card-icon">↗</div>
+        <div class="station-info">
+          <div class="station-name">Поделиться радио</div>
+          <div class="station-desc">Отправить ссылку другу в Telegram</div>
+        </div>
+        <div class="station-play-btn" style="border-color: rgba(74,142,40,0.3);">
+          <div style="font-size:16px; color: var(--green2);">→</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
