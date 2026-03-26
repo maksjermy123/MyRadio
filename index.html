@@ -272,7 +272,14 @@ function handleClick(station, card) {
 function playStation(station, card) {
   audio.pause();
   stopMetaPolling();
+  audio.src = '';
+  audio.load();
   audio.src = station.url;
+  if (station.url.indexOf('.mp3') !== -1 || station.url.indexOf('stream') !== -1) {
+    audio.setAttribute('type', 'audio/mpeg');
+  } else {
+    audio.setAttribute('type', 'audio/mpeg');
+  }
   audio.volume = parseInt(document.getElementById('vol-slider').value) / 100;
   currentStation = station;
   document.getElementById('bp-name').textContent = station.name;
