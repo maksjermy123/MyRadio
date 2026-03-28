@@ -124,9 +124,7 @@ input[type=range].volume-slider { flex: 1; height: 4px; -webkit-appearance: none
 input[type=range].volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; }
 input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; border: none; }
 .vol-pct { font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; font-weight: 600; }
-.share-card { background: #d8ecd0; border: 1.5px solid rgba(74,142,40,0.25); border-radius: 16px; padding: 14px; cursor: pointer; display: flex; align-items: center; gap: 13px; transition: all 0.2s; box-shadow: 0 2px 8px rgba(74,142,40,0.08); margin-top: 8px; }
-.share-card:active { transform: scale(0.98); background: #c8e0c0; }
-.share-card-icon { width: 46px; height: 46px; background: rgba(74,142,40,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; border: 1.5px solid rgba(74,142,40,0.2); flex-shrink: 0; color: var(--green); font-weight: 700; }
+
 </style>
 </head>
 <body>
@@ -165,18 +163,7 @@ input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; b
     <div class="share-toast" id="share-toast">✓ Ссылка скопирована!</div>
     <div class="section-label">Выберите станцию</div>
     <div class="stations-list" id="stations-list"></div>
-    <div style="padding: 0 12px 24px;">
-      <div class="share-card" onclick="shareRadio()">
-        <div class="share-card-icon">↗</div>
-        <div class="station-info">
-          <div class="station-name">Поделиться радио</div>
-          <div class="station-desc">Отправить ссылку другу в Telegram</div>
-        </div>
-        <div class="station-play-btn" style="border-color: rgba(74,142,40,0.3);">
-          <div style="font-size:16px; color: var(--green2);">→</div>
-        </div>
-      </div>
-    </div>
+
   </div>
 </div>
 
@@ -216,11 +203,12 @@ var BACKEND_URL = 'https://myradio-rrsk.onrender.com';
 var BOT_LINK = 'https://t.me/preoradio_bot/radio';
 
 var STATIONS = [
-  { id: 'dwg',    name: 'DWG Radio',              desc: 'Христианское вещание',        icon: '&#10011;&#65039;', url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3' },
-  { id: 'golos1', name: 'Голос Мира — Проповеди', desc: 'МСЦ ЕХБ · Слово и поучение', icon: '🕊️', url: 'https://golosmira.com:8021/rgm.mp3' },
-  { id: 'golos2', name: 'Голос Мира — Музыка',    desc: 'Христианские песнопения',     icon: '🎵', url: 'https://golosmira.com:8021/music64.mp3' },
-  { id: 'golos3', name: 'Голос Мира — Библия',    desc: 'Чтение Священного Писания',   icon: '📖', url: 'https://golosmira.com:9022/Bible' },
-  { id: 'slovo',  name: 'Слово Благодати',        desc: 'Проповеди и богослужения',    icon: '🙏', url: 'https://c13.radioboss.fm:18516/stream' }
+  { id: 'golos3', name: 'Голос Мира — Библия',    desc: 'Чтение Священного Писания',        icon: '📖', url: 'https://golosmira.com:9022/Bible' },
+  { id: 'dwg',    name: 'DWG Radio',              desc: 'Христианское вещание',             icon: '✝️',  url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3' },
+  { id: 'share',  name: 'Поделиться радио с другом', desc: 'Отправить ссылку в Telegram',   icon: '↗',  url: 'share' },
+  { id: 'slovo',  name: 'Слово Благодати',        desc: 'Проповеди и богослужения',         icon: '🙏', url: 'https://c13.radioboss.fm:18516/stream' },
+  { id: 'golos2', name: 'Голос Мира — Музыка',    desc: 'Христианские песнопения',          icon: '🎵', url: 'https://golosmira.com:8021/music64.mp3' },
+  { id: 'golos1', name: 'Голос Мира — Проповеди', desc: 'МСЦ ЕХБ · Слово и поучение',      icon: '🕊️', url: 'https://golosmira.com:8021/rgm.mp3' }
 ];
 
 var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
@@ -249,14 +237,26 @@ function renderStations() {
     var card = document.createElement('div');
     card.className = 'station-card';
     card.dataset.id = s.id;
-    card.innerHTML =
-      '<div class="station-icon">' + s.icon + '</div>' +
-      '<div class="station-info">' +
-        '<div class="station-name">' + s.name + '</div>' +
-        '<div class="station-desc">' + s.desc + '</div>' +
-        '<div class="station-track" id="track-' + s.id + '"></div>' +
-      '</div>' +
-      '<div class="station-play-btn"><div class="play-tri"></div></div>';
+    if (s.url === 'share') {
+      card.style.background = '#d8ecd0';
+      card.style.borderColor = 'rgba(74,142,40,0.25)';
+      card.innerHTML =
+        '<div class="station-icon" style="background:rgba(74,142,40,0.2);border-color:rgba(74,142,40,0.2);color:#3a7020;font-size:22px;font-weight:700;">' + s.icon + '</div>' +
+        '<div class="station-info">' +
+          '<div class="station-name">' + s.name + '</div>' +
+          '<div class="station-desc">' + s.desc + '</div>' +
+        '</div>' +
+        '<div class="station-play-btn" style="border-color:rgba(74,142,40,0.3);"><div style="font-size:16px;color:#3a7020;">→</div></div>';
+    } else {
+      card.innerHTML =
+        '<div class="station-icon">' + s.icon + '</div>' +
+        '<div class="station-info">' +
+          '<div class="station-name">' + s.name + '</div>' +
+          '<div class="station-desc">' + s.desc + '</div>' +
+          '<div class="station-track" id="track-' + s.id + '"></div>' +
+        '</div>' +
+        '<div class="station-play-btn"><div class="play-tri"></div></div>';
+    }
     card.addEventListener('click', function() { handleClick(s, card); });
     list.appendChild(card);
   });
@@ -266,6 +266,11 @@ function handleClick(station, card) {
   // Haptic feedback через Telegram API
   if (tg && tg.HapticFeedback) {
     tg.HapticFeedback.impactOccurred('light');
+  }
+  // Кнопка поделиться
+  if (station.url === 'share') {
+    shareRadio();
+    return;
   }
   if (currentStation && currentStation.id === station.id) { togglePlay(); return; }
   document.querySelectorAll('.station-card').forEach(function(c) { c.classList.remove('active','loading'); });
@@ -464,7 +469,7 @@ function showDenied(reason) {
   } else {
     text.textContent = 'Радио доступно только подписчикам канала «От чтения к преображению».';
     btn.textContent = '🌿 Подписаться на канал';
-    btn.href = 'https://t.me/Chtenie_Preobrazenie';
+    btn.href = 'https://t.me/Testovuj';
     recheck.style.display = 'block';
   }
 
