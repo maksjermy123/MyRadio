@@ -6,195 +6,194 @@
 <title>Радио</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Nunito:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Nunito:wght@300;400;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
   --sky:     #c8dff0;
   --sky2:    #a8c8e0;
-  --sky3:    #7aaac8;
-  --green:   #4a8e28;
-  --green2:  #3a7020;
-  --green3:  #d4ead8;
-  --orange:  #e07820;
-  --orange2: #f09030;
-  --orange3: #fff0d8;
+  --sky3:    #5a9abf;
+  --green:   #3a8a1a;
+  --green2:  #2a6a10;
+  --green3:  #c8e8b8;
+  --orange:  #d86010;
+  --orange2: #f08020;
+  --orange3: #ffe8c8;
   --trunk:   #8b4a1a;
-  --trunk2:  #6b3410;
+  --trunk2:  #5a2a08;
   --bg:      #eef6fb;
   --surface: #ffffff;
-  --text:    #2a1a08;
-  --text2:   #5a3a18;
-  --muted:   #8a6a48;
-  --border:  rgba(139,74,26,0.12);
-  --border2: rgba(139,74,26,0.22);
+  --text:    #1a0a04;
+  --text2:   #4a2a0a;
+  --muted:   #6a4a28;
+  --border:  rgba(139,74,26,0.15);
+  --border2: rgba(139,74,26,0.28);
+  --tab-h:   58px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
 body { background: var(--bg); color: var(--text); font-family: 'Nunito', sans-serif; font-weight: 400; min-height: 100vh; overflow-x: hidden; }
 
+/* ── ЗАГРУЗКА ── */
 #loading-screen { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; z-index: 200; transition: opacity 0.5s ease; }
 #loading-screen.hidden { opacity: 0; pointer-events: none; }
 .loader-wrap { width: 56px; height: 56px; position: relative; display: flex; align-items: center; justify-content: center; }
-.loader-ring { position: absolute; inset: 0; border: 2px solid var(--green3); border-top-color: var(--green); border-radius: 50%; animation: spin 1s linear infinite; }
+.loader-ring { position: absolute; inset: 0; border: 3px solid var(--green3); border-top-color: var(--green); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loader-emoji { font-size: 24px; }
 .loader-text { font-family: 'Cormorant Garamond', serif; font-size: 15px; font-style: italic; color: var(--muted); letter-spacing: 0.06em; }
 
+/* ── ОТКАЗ ── */
 #denied-screen { display: none; position: fixed; inset: 0; background: linear-gradient(180deg, var(--sky) 0%, #f8f2e4 100%); flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 40px 28px; text-align: center; z-index: 100; }
 #denied-screen.visible { display: flex; }
 .denied-img { font-size: 52px; margin-bottom: 4px; }
 .denied-title { font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 600; color: var(--trunk2); }
 .denied-line { width: 50px; height: 2px; background: linear-gradient(90deg, transparent, var(--orange), transparent); margin: 2px auto; }
 .denied-text { font-size: 14px; color: var(--text2); line-height: 1.65; max-width: 270px; }
-.btn-subscribe { padding: 14px 28px; background: var(--green); border: none; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; border-radius: 50px; cursor: pointer; text-decoration: none; display: block; width: 100%; max-width: 256px; text-align: center; transition: background 0.2s; box-shadow: 0 4px 16px rgba(74,142,40,0.3); }
+.btn-subscribe { padding: 14px 28px; background: var(--green); border: none; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; border-radius: 50px; cursor: pointer; text-decoration: none; display: block; width: 100%; max-width: 256px; text-align: center; transition: background 0.2s; box-shadow: 0 4px 16px rgba(58,138,26,0.35); }
 .btn-subscribe:hover { background: var(--green2); }
-.btn-recheck { padding: 14px 28px; background: var(--orange); border: none; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; border-radius: 50px; cursor: pointer; display: block; width: 100%; max-width: 256px; transition: opacity 0.2s; box-shadow: 0 4px 16px rgba(224,120,32,0.3); }
+.btn-recheck { padding: 14px 28px; background: var(--orange); border: none; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; border-radius: 50px; cursor: pointer; display: block; width: 100%; max-width: 256px; transition: opacity 0.2s; box-shadow: 0 4px 16px rgba(216,96,16,0.35); }
 .btn-recheck:disabled { opacity: 0.5; cursor: default; }
 .recheck-msg { font-size: 12px; color: var(--muted); min-height: 16px; font-style: italic; }
 
-#main-screen { display: none; padding-bottom: 165px; }
+/* ── ОСНОВНОЙ ЭКРАН ── */
+#main-screen { display: none; }
 #main-screen.visible { display: block; }
 
-.header { background: linear-gradient(180deg, var(--sky) 0%, var(--sky2) 60%, var(--bg) 100%); padding: 24px 20px 20px; position: relative; overflow: hidden; }
-.header::before { content: ''; position: absolute; top: 8px; left: -20px; width: 180px; height: 60px; background: rgba(255,255,255,0.5); border-radius: 50px; filter: blur(12px); }
-.header::after { content: ''; position: absolute; top: 20px; right: -10px; width: 140px; height: 45px; background: rgba(255,255,255,0.4); border-radius: 50px; filter: blur(10px); }
-.header-inner { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 12px; }
-.header-tree { font-size: 52px; line-height: 1; flex-shrink: 0; filter: drop-shadow(0 2px 8px rgba(74,142,40,0.3)); }
-.header-texts { flex: 1; }
-.header-eyebrow { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--sky3); margin-bottom: 3px; font-weight: 600; }
-.header-title { font-family: 'Cormorant Garamond', serif; font-size: 26px; font-weight: 600; color: var(--trunk2); line-height: 1.1; }
-.header-channel { font-family: 'Cormorant Garamond', serif; font-size: 20px; font-style: italic; color: var(--trunk); margin-top: 3px; }
+/* ── НИЖНИЙ TAB BAR ── */
+#tab-bar { position: fixed; bottom: 0; left: 0; right: 0; height: var(--tab-h); background: rgba(255,252,248,0.97); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 2px solid var(--border2); display: flex; z-index: 60; }
+.tab-btn { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; background: none; border: none; transition: all 0.2s; padding: 6px 0; }
+.tab-btn:active { transform: scale(0.95); }
+.tab-icon { font-size: 20px; line-height: 1; }
+.tab-label { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.tab-btn.active .tab-label { color: var(--green); }
+.tab-btn:not(.active) .tab-label { color: var(--muted); }
+.tab-btn.active .tab-icon { filter: drop-shadow(0 0 4px rgba(58,138,26,0.5)); }
+.tab-indicator { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--green); border-radius: 0 0 3px 3px; transform: scaleX(0); transition: transform 0.3s; }
+.tab-btn.active .tab-indicator { transform: scaleX(1); }
 
-.share-toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--green); color: #fff; padding: 10px 20px; border-radius: 50px; font-size: 13px; font-weight: 600; white-space: nowrap; opacity: 0; transition: all 0.3s ease; z-index: 300; pointer-events: none; }
+/* ══════════════════════════════════════
+   ВКЛАДКА РАДИО
+══════════════════════════════════════ */
+#radio-tab { display: none; padding-bottom: calc(var(--tab-h) + 10px); }
+#radio-tab.active { display: block; }
+
+.header { background: linear-gradient(180deg, var(--sky) 0%, var(--sky2) 60%, var(--bg) 100%); padding: 20px 16px 16px; position: relative; overflow: hidden; }
+.header::before { content: ''; position: absolute; top: 6px; left: -20px; width: 180px; height: 60px; background: rgba(255,255,255,0.5); border-radius: 50px; filter: blur(12px); }
+.header::after { content: ''; position: absolute; top: 18px; right: -10px; width: 140px; height: 45px; background: rgba(255,255,255,0.4); border-radius: 50px; filter: blur(10px); }
+.header-inner { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 10px; }
+.header-tree { font-size: 46px; line-height: 1; flex-shrink: 0; filter: drop-shadow(0 2px 8px rgba(58,138,26,0.4)); }
+.header-texts { flex: 1; }
+.header-eyebrow { font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--sky3); margin-bottom: 2px; font-weight: 700; }
+.header-title { font-family: 'Cormorant Garamond', serif; font-size: 24px; font-weight: 600; color: var(--trunk2); line-height: 1.1; }
+.header-channel { font-family: 'Cormorant Garamond', serif; font-size: 18px; font-style: italic; color: var(--trunk); margin-top: 2px; }
+.share-btn { border-radius: 50px; border: 2px solid rgba(58,138,26,0.4); background: rgba(255,255,255,0.8); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; flex-shrink: 0; align-self: center; transition: all 0.2s; padding: 6px 10px; }
+.share-btn:active { transform: scale(0.95); }
+.share-icon { font-size: 14px; color: var(--green); }
+.share-label { font-size: 11px; font-weight: 800; color: var(--green); letter-spacing: 0.04em; }
+.share-toast { position: fixed; bottom: calc(var(--tab-h) + 16px); left: 50%; transform: translateX(-50%) translateY(20px); background: var(--green); color: #fff; padding: 10px 20px; border-radius: 50px; font-size: 13px; font-weight: 600; white-space: nowrap; opacity: 0; transition: all 0.3s ease; z-index: 300; pointer-events: none; }
 .share-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-.section-label { padding: 10px 18px 8px; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
-.stations-list { padding: 0 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.stations-list .station-card {
-  background: var(--surface);
-  border: 1.5px solid var(--border);
-  border-radius: 16px;
-  padding: 14px 12px;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  gap: 4px;
-  transition: all 0.2s;
-  box-shadow: 0 2px 10px rgba(139,74,26,0.08);
-  opacity: 0;
-  transform: translateY(10px);
-  animation: card-in 0.35s ease forwards;
-  min-height: 90px;
-  justify-content: flex-end;
-  position: relative;
-  overflow: hidden;
-}
-.station-card:nth-child(1) { animation-delay: 0.05s; }
-.station-card:nth-child(2) { animation-delay: 0.10s; }
-.station-card:nth-child(3) { animation-delay: 0.15s; }
-.station-card:nth-child(4) { animation-delay: 0.20s; }
-.station-card:nth-child(5) { animation-delay: 0.25s; }
-@keyframes card-in { to { opacity: 1; transform: translateY(0); } }
-.station-card:active { transform: scale(0.98); }
-.stations-list .station-card.active { border-width: 2px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); }
-.stations-list .station-card.active .station-name { font-weight: 800; }
-.playing-badge {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  background: rgba(0,0,0,0.25);
-  color: #fff;
-  font-size: 8px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 20px;
-  letter-spacing: 0.08em;
-  z-index: 2;
-}
-.station-icon {
-  position: absolute;
-  top: 50%;
-  right: 8px;
-  transform: translateY(-55%) rotate(8deg);
-  font-size: 36px;
-  opacity: 0.18;
-  pointer-events: none;
-  line-height: 1;
-  filter: saturate(0.8);
-}
-.station-card.active .station-icon { background: rgba(224,120,32,0.15); border-color: rgba(224,120,32,0.3); }
-.station-info { flex: 1; min-width: 0; }
-.station-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  line-height: 1.3;
-  position: relative;
-  z-index: 1;
-}
-.station-desc {
-  font-size: 10px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  position: relative;
-  z-index: 1;
-}
-.station-track {
-  font-size: 10px;
-  color: var(--green2);
-  font-style: italic;
-  font-family: 'Cormorant Garamond', serif;
-  display: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  position: relative;
-  z-index: 1;
-}
-.station-card.active .station-track { display: block; }
-.station-play-btn { display: none; }
-.station-card.active .station-play-btn { border-color: var(--orange); background: var(--orange); }
-.play-tri { width: 0; height: 0; border-style: solid; border-width: 6px 0 6px 10px; border-color: transparent transparent transparent var(--muted); margin-left: 3px; }
-.station-card.active .play-tri { border-color: transparent transparent transparent #fff; }
-.station-card.loading .play-tri { border: none; width: 14px; height: 14px; border-top: 2px solid var(--orange); border-right: 2px solid transparent; border-radius: 50%; margin-left: 0; animation: spin 0.7s linear infinite; }
+.section-label { padding: 10px 14px 6px; font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 
-#bottom-player { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(255,252,248,0.97); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 2px solid var(--border2); z-index: 50; display: none; }
+/* Сетка станций */
+.stations-list { padding: 0 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.station-card { border-radius: 16px; padding: 12px 10px; cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; transition: all 0.2s; box-shadow: 0 2px 10px rgba(0,0,0,0.08); opacity: 0; transform: translateY(8px); animation: card-in 0.3s ease forwards; min-height: 88px; justify-content: flex-end; position: relative; overflow: hidden; }
+.station-card:nth-child(1) { animation-delay: 0.04s; } .station-card:nth-child(2) { animation-delay: 0.08s; } .station-card:nth-child(3) { animation-delay: 0.12s; } .station-card:nth-child(4) { animation-delay: 0.16s; } .station-card:nth-child(5) { animation-delay: 0.20s; } .station-card:nth-child(6) { animation-delay: 0.24s; } .station-card:nth-child(7) { animation-delay: 0.28s; } .station-card:nth-child(8) { animation-delay: 0.32s; } .station-card:nth-child(9) { animation-delay: 0.36s; } .station-card:nth-child(10) { animation-delay: 0.40s; }
+@keyframes card-in { to { opacity: 1; transform: translateY(0); } }
+.station-card:active { transform: scale(0.97); }
+.station-card.active { box-shadow: 0 4px 18px rgba(0,0,0,0.18); }
+.station-icon { position: absolute; top: 50%; right: 8px; transform: translateY(-55%) rotate(8deg); font-size: 36px; opacity: 0.18; pointer-events: none; line-height: 1; }
+.station-name { font-size: 12px; font-weight: 800; line-height: 1.3; position: relative; z-index: 1; }
+.station-desc { font-size: 10px; opacity: 0.6; position: relative; z-index: 1; }
+.station-track { font-size: 10px; font-style: italic; font-family: 'Cormorant Garamond', serif; display: none; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; z-index: 1; max-width: 100%; }
+.station-card.active .station-track { display: block; }
+.playing-badge { position: absolute; top: 6px; left: 7px; background: rgba(0,0,0,0.22); color: #fff; font-size: 7px; font-weight: 800; padding: 2px 6px; border-radius: 20px; letter-spacing: 0.08em; z-index: 2; }
+
+/* ── НИЖНИЙ ПЛЕЕР ── */
+#bottom-player { position: fixed; bottom: var(--tab-h); left: 0; right: 0; background: rgba(255,252,248,0.97); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 2px solid var(--border2); z-index: 50; display: none; }
 #bottom-player.visible { display: block; }
-.bp-topline { height: 3px; background: linear-gradient(90deg, var(--green2), var(--orange), var(--green2)); }
-.bp-main { display: flex; align-items: center; gap: 12px; padding: 12px 16px 8px; }
-.bp-vis { display: flex; align-items: flex-end; gap: 3px; height: 24px; flex-shrink: 0; }
+.bp-topline { height: 3px; background: linear-gradient(90deg, var(--green2), var(--orange2), var(--green2)); }
+.bp-main { display: flex; align-items: center; gap: 10px; padding: 10px 14px 6px; }
+.bp-vis { display: flex; align-items: flex-end; gap: 2px; height: 22px; flex-shrink: 0; }
 .bp-bar { width: 3px; border-radius: 2px; animation: bar-dance 0.9s ease-in-out infinite; }
 .bp-bar:nth-child(1) { height: 30%; background: var(--green); animation-delay: 0s; }
-.bp-bar:nth-child(2) { height: 90%; background: var(--orange); animation-delay: 0.18s; }
+.bp-bar:nth-child(2) { height: 90%; background: var(--orange2); animation-delay: 0.18s; }
 .bp-bar:nth-child(3) { height: 55%; background: var(--sky3); animation-delay: 0.35s; }
-.bp-bar:nth-child(4) { height: 75%; background: var(--orange2); animation-delay: 0.12s; }
+.bp-bar:nth-child(4) { height: 75%; background: var(--orange); animation-delay: 0.12s; }
 .bp-bar:nth-child(5) { height: 35%; background: var(--green); animation-delay: 0.28s; }
 @keyframes bar-dance { 0%,100% { transform: scaleY(0.3); opacity: 0.4; } 50% { transform: scaleY(1); opacity: 1; } }
 .bp-bar.paused { animation-play-state: paused; transform: scaleY(0.3); opacity: 0.3; }
 .bp-info { flex: 1; min-width: 0; }
-.bp-name { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bp-track { font-size: 12px; color: var(--green2); font-style: italic; font-family: 'Cormorant Garamond', serif; min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bp-status { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; }
-.bp-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.bp-stop-btn { width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; transition: all 0.2s; }
-.bp-stop-btn:hover { border-color: var(--trunk); color: var(--trunk); }
-.bp-play-btn { width: 44px; height: 44px; border-radius: 50%; border: none; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 3px 14px rgba(74,142,40,0.35); transition: transform 0.15s; }
+.bp-name { font-size: 12px; font-weight: 800; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bp-track { font-size: 11px; color: var(--green2); font-style: italic; font-family: 'Cormorant Garamond', serif; min-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bp-status { font-size: 9px; color: var(--muted); letter-spacing: 0.06em; }
+.bp-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.bp-stop-btn { width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px; transition: all 0.2s; }
+.bp-play-btn { width: 40px; height: 40px; border-radius: 50%; border: none; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 3px 12px rgba(58,138,26,0.4); transition: transform 0.15s; }
 .bp-play-btn:active { transform: scale(0.92); }
-.bp-play-icon { width: 0; height: 0; border-style: solid; border-width: 7px 0 7px 13px; border-color: transparent transparent transparent #fff; margin-left: 3px; }
-.bp-pause-icon { display: flex; gap: 4px; }
-.bp-pause-icon span { display: block; width: 3px; height: 14px; background: #fff; border-radius: 2px; }
-.volume-row { display: flex; align-items: center; gap: 10px; padding: 2px 16px 14px; }
-.vol-icon { font-size: 15px; flex-shrink: 0; width: 20px; text-align: center; cursor: pointer; user-select: none; }
+.bp-play-icon { width: 0; height: 0; border-style: solid; border-width: 6px 0 6px 11px; border-color: transparent transparent transparent #fff; margin-left: 2px; }
+.bp-pause-icon { display: flex; gap: 3px; }
+.bp-pause-icon span { display: block; width: 3px; height: 13px; background: #fff; border-radius: 2px; }
+.volume-row { display: flex; align-items: center; gap: 8px; padding: 2px 14px 10px; }
+.vol-icon { font-size: 14px; flex-shrink: 0; width: 18px; text-align: center; cursor: pointer; }
 input[type=range].volume-slider { flex: 1; height: 4px; -webkit-appearance: none; appearance: none; background: var(--green3); border-radius: 4px; outline: none; cursor: pointer; }
 input[type=range].volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; }
 input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--green), var(--orange)); cursor: pointer; border: none; }
-.vol-pct { font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; font-weight: 600; }
+.vol-pct { font-size: 10px; color: var(--muted); min-width: 28px; text-align: right; font-weight: 700; }
 
+/* ══════════════════════════════════════
+   ВКЛАДКА ОГЛАВЛЕНИЕ
+══════════════════════════════════════ */
+#toc-tab { display: none; padding-bottom: calc(var(--tab-h) + 10px); }
+#toc-tab.active { display: block; }
+
+.toc-header { background: linear-gradient(180deg, #1a3a5c 0%, #2a5a8a 60%, var(--bg) 100%); padding: 18px 16px 14px; }
+.toc-title-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.toc-icon { font-size: 36px; filter: drop-shadow(0 2px 6px rgba(0,100,200,0.4)); }
+.toc-texts { flex: 1; }
+.toc-eyebrow { font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: #7ab8e8; margin-bottom: 2px; font-weight: 700; }
+.toc-main-title { font-family: 'Cormorant Garamond', serif; font-size: 22px; font-weight: 600; color: #fff; line-height: 1.1; }
+.toc-sub { font-size: 11px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+.toc-search-wrap { position: relative; }
+.toc-search-icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); font-size: 14px; opacity: 0.5; pointer-events: none; }
+.toc-search { width: 100%; background: rgba(255,255,255,0.12); border: 1.5px solid rgba(255,255,255,0.2); border-radius: 12px; color: #fff; font-family: 'Nunito', sans-serif; font-size: 13px; padding: 9px 36px; outline: none; transition: border-color 0.2s; }
+.toc-search::placeholder { color: rgba(255,255,255,0.4); }
+.toc-search:focus { border-color: rgba(255,255,255,0.5); background: rgba(255,255,255,0.18); }
+
+/* Категории */
+#toc-categories { padding: 8px 10px; }
+.toc-section-label { font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 6px 4px 8px; }
+.cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.cat-card { border-radius: 16px; padding: 12px 10px; cursor: pointer; position: relative; overflow: hidden; min-height: 80px; display: flex; flex-direction: column; justify-content: flex-end; border: 1.5px solid rgba(255,255,255,0.12); transition: all 0.2s; box-shadow: 0 2px 10px rgba(0,0,0,0.08); opacity: 0; transform: translateY(8px); animation: card-in 0.3s ease forwards; }
+.cat-card:active { transform: scale(0.97); }
+.cat-bg-icon { position: absolute; top: -4px; right: -2px; font-size: 38px; opacity: 0.15; transform: rotate(8deg); pointer-events: none; }
+.cat-name { font-size: 11px; font-weight: 800; line-height: 1.3; position: relative; z-index: 1; }
+.cat-count { font-size: 10px; opacity: 0.65; position: relative; z-index: 1; margin-top: 2px; }
+
+/* Посты */
+#toc-posts { display: none; padding: 0 10px; }
+#toc-posts.visible { display: block; }
+.posts-back { display: flex; align-items: center; gap: 8px; padding: 12px 4px 6px; cursor: pointer; }
+.posts-back-arrow { font-size: 20px; color: var(--sky3); font-weight: 700; }
+.posts-back-label { font-size: 13px; color: var(--sky3); font-weight: 700; }
+.posts-cat-title { font-family: 'Cormorant Garamond', serif; font-size: 20px; font-weight: 600; color: var(--trunk2); padding: 0 4px 8px; }
+.post-card { background: var(--surface); border: 1.5px solid var(--border); border-radius: 14px; padding: 12px 14px; cursor: pointer; display: block; text-decoration: none; color: inherit; transition: all 0.2s; margin-bottom: 8px; box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+.post-card:active { transform: scale(0.98); }
+.post-title { font-size: 13px; font-weight: 700; color: var(--text); line-height: 1.4; margin-bottom: 4px; }
+.post-preview { font-size: 11px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; }
+.post-meta { display: flex; align-items: center; justify-content: space-between; }
+.post-date { font-size: 10px; color: var(--muted); }
+.post-link { font-size: 10px; color: var(--sky3); font-weight: 700; }
+
+/* Поиск результаты */
+#toc-search-results { display: none; padding: 0 10px; }
+#toc-search-results.visible { display: block; }
+.search-results-title { font-size: 11px; color: var(--muted); font-weight: 700; padding: 10px 4px 8px; letter-spacing: 0.06em; }
+
+/* Загрузка оглавления */
+.toc-loading { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 13px; }
+.toc-error { text-align: center; padding: 40px 20px; color: #c0392b; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -211,59 +210,116 @@ input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; b
   <div class="denied-img">🌳</div>
   <div class="denied-title">Доступ закрыт</div>
   <div class="denied-line"></div>
-  <div class="denied-text" id="denied-text">Радио доступно только подписчикам канала «От чтения к преображению».</div>
-  <a href="https://t.me/Testovuj" class="btn-subscribe" id="btn-subscribe" target="_blank">🌿 Подписаться на канал</a>
+  <div class="denied-text" id="denied-text">Радио доступно только подписчикам канала «От чтения к Преображению».</div>
+  <a href="https://t.me/Chtenie_Preobrazenie" class="btn-subscribe" id="btn-subscribe" target="_blank">🌿 Подписаться на канал</a>
   <button class="btn-recheck" id="recheck-btn" onclick="recheckSubscription()">✓ Я подписался — проверить</button>
   <div class="recheck-msg" id="recheck-msg"></div>
 </div>
 
-<div id="app">
-  <div id="main-screen">
+<div id="main-screen">
+
+  <!-- ═══ ВКЛАДКА РАДИО ═══ -->
+  <div id="radio-tab">
     <div class="header">
       <div class="header-inner">
         <div class="header-tree">🌳</div>
         <div class="header-texts">
           <div class="header-eyebrow">Прямой эфир · Онлайн</div>
           <div class="header-title">Христианское радио</div>
-          <div class="header-channel">для канала «От чтения к преображению»</div>
+          <div class="header-channel">От чтения к Преображению</div>
         </div>
-
+        <button class="share-btn" onclick="shareRadio()">
+          <span class="share-icon">↗</span>
+          <span class="share-label">Поделиться</span>
+        </button>
       </div>
     </div>
     <div class="share-toast" id="share-toast">✓ Ссылка скопирована!</div>
     <div class="section-label">Выберите станцию</div>
     <div class="stations-list" id="stations-list"></div>
+  </div>
 
-  </div>
-</div>
+  <!-- ═══ ВКЛАДКА ОГЛАВЛЕНИЕ ═══ -->
+  <div id="toc-tab">
+    <div class="toc-header">
+      <div class="toc-title-row">
+        <div class="toc-icon">📖</div>
+        <div class="toc-texts">
+          <div class="toc-eyebrow">Канал · Все посты</div>
+          <div class="toc-main-title">Оглавление</div>
+          <div class="toc-sub" id="toc-stats">Загрузка...</div>
+        </div>
+      </div>
+      <div class="toc-search-wrap">
+        <span class="toc-search-icon">🔍</span>
+        <input class="toc-search" id="toc-search-input" type="text" placeholder="Поиск по постам..." autocomplete="off" oninput="onTocSearch(this.value)">
+      </div>
+    </div>
 
-<div id="bottom-player">
-  <div class="bp-topline"></div>
-  <div class="bp-main">
-    <div class="bp-vis">
-      <div class="bp-bar" id="b1"></div>
-      <div class="bp-bar" id="b2"></div>
-      <div class="bp-bar" id="b3"></div>
-      <div class="bp-bar" id="b4"></div>
-      <div class="bp-bar" id="b5"></div>
+    <div id="toc-categories">
+      <div class="toc-section-label">Категории</div>
+      <div class="cat-grid" id="cat-grid">
+        <div class="toc-loading" style="grid-column:1/-1;">⏳ Загружаю оглавление...</div>
+      </div>
     </div>
-    <div class="bp-info">
-      <div class="bp-name" id="bp-name">—</div>
-      <div class="bp-track" id="bp-track"></div>
-      <div class="bp-status" id="bp-status">● в эфире</div>
+
+    <div id="toc-posts">
+      <div class="posts-back" onclick="showCategories()">
+        <span class="posts-back-arrow">←</span>
+        <span class="posts-back-label">Все категории</span>
+      </div>
+      <div class="posts-cat-title" id="posts-cat-title"></div>
+      <div id="posts-list"></div>
     </div>
-    <div class="bp-controls">
-      <button class="bp-stop-btn" id="bp-stop-btn">■</button>
-      <button class="bp-play-btn" id="bp-play-btn">
-        <div class="bp-play-icon" id="bp-play-icon"></div>
-      </button>
+
+    <div id="toc-search-results">
+      <div class="search-results-title" id="search-results-title">Результаты поиска</div>
+      <div id="search-list"></div>
     </div>
   </div>
-  <div class="volume-row" id="volume-row">
-    <span class="vol-icon" id="vol-icon" onclick="toggleMute()">🔊</span>
-    <input type="range" class="volume-slider" id="vol-slider" min="0" max="100" value="80" oninput="setVolume(this.value)">
-    <span class="vol-pct" id="vol-pct">80%</span>
+
+  <!-- ═══ НИЖНИЙ ПЛЕЕР (поверх tab bar) ═══ -->
+  <div id="bottom-player">
+    <div class="bp-topline"></div>
+    <div class="bp-main">
+      <div class="bp-vis">
+        <div class="bp-bar" id="b1"></div><div class="bp-bar" id="b2"></div>
+        <div class="bp-bar" id="b3"></div><div class="bp-bar" id="b4"></div>
+        <div class="bp-bar" id="b5"></div>
+      </div>
+      <div class="bp-info">
+        <div class="bp-name" id="bp-name">—</div>
+        <div class="bp-track" id="bp-track"></div>
+        <div class="bp-status" id="bp-status">● в эфире</div>
+      </div>
+      <div class="bp-controls">
+        <button class="bp-stop-btn" id="bp-stop-btn">■</button>
+        <button class="bp-play-btn" id="bp-play-btn">
+          <div class="bp-play-icon" id="bp-play-icon"></div>
+        </button>
+      </div>
+    </div>
+    <div class="volume-row" id="volume-row">
+      <span class="vol-icon" id="vol-icon" onclick="toggleMute()">🔊</span>
+      <input type="range" class="volume-slider" id="vol-slider" min="0" max="100" value="80" oninput="setVolume(this.value)">
+      <span class="vol-pct" id="vol-pct">80%</span>
+    </div>
   </div>
+
+  <!-- ═══ TAB BAR ═══ -->
+  <div id="tab-bar">
+    <button class="tab-btn active" id="tab-radio" onclick="switchTab('radio')">
+      <div class="tab-indicator"></div>
+      <span class="tab-icon">📻</span>
+      <span class="tab-label">Радио</span>
+    </button>
+    <button class="tab-btn" id="tab-toc" onclick="switchTab('toc')">
+      <div class="tab-indicator"></div>
+      <span class="tab-icon">📖</span>
+      <span class="tab-label">Оглавление</span>
+    </button>
+  </div>
+
 </div>
 
 <audio id="audio-player" preload="none"></audio>
@@ -271,18 +327,19 @@ input[type=range].volume-slider::-moz-range-thumb { width: 16px; height: 16px; b
 <script>
 var BACKEND_URL = 'https://myradio-rrsk.onrender.com';
 var BOT_LINK = 'https://t.me/preoradio_bot/radio';
+var POSTS_URL = 'https://maksjermy123.github.io/MyRadio/posts.json';
 
 var STATIONS = [
-  { id: 'golos3', name: 'Голос Мира — Библия',    desc: 'Чтение Писания',        icon: '📖', color: '#e8f0d8', textColor: '#3a5a10', url: 'https://golosmira.com:9022/Bible' },
-  { id: 'slovo',  name: 'Слово Благодати',        desc: 'Проповеди',             icon: '🙏', color: '#f0e8d8', textColor: '#7a4010', url: 'https://c13.radioboss.fm:18516/stream' },
-  { id: 'golos2', name: 'Голос Мира — Музыка',    desc: 'Песнопения',            icon: '🎵', color: '#d8e8f0', textColor: '#104878', url: 'https://golosmira.com:8021/music64.mp3' },
-  { id: 'dwg',    name: 'DWG Radio',              desc: 'Христианское вещание',  icon: '✝️',  color: '#f0d8d8', textColor: '#781010', url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3' },
-  { id: 'twr',    name: 'TWR Radio',              desc: 'Трансмировое радио',    icon: '🌍', color: '#d8f0e8', textColor: '#106040', url: 'https://eu3.fastcast4u.com/proxy/twr0?mp=/;' },
-  { id: 'slovo2', name: 'Открытое Слово',         desc: 'Прямой эфир',           icon: '📻', color: '#ede8d8', textColor: '#6b4810', url: 'https://rt.radioslovo.net:4395/radio' },
-  { id: 'golos1', name: 'Голос Мира — Проповеди', desc: 'Слово и поучение',      icon: '🕊️', color: '#e8d8f0', textColor: '#501870', url: 'https://golosmira.com:8021/rgm.mp3' },
-  { id: 'jt',     name: 'JT Radio',              desc: 'Христианская музыка',    icon: '🎶', color: '#f0ead8', textColor: '#785010', url: 'https://jtradio.net/live192' },
-  { id: 'nl',     name: 'Новая Жизнь',           desc: 'Радио надежды',          icon: '🌱', color: '#d8f0d8', textColor: '#205020', url: 'https://nlradio.net/stream/nlradio-low.aac' },
-  { id: 'share',  name: 'Поделиться',             desc: 'Отправить другу',        icon: '↗',  color: '#d8ecd0', textColor: '#2a6010', url: 'share' }
+  { id: 'golos3', name: 'Голос Мира — Библия',    desc: 'Чтение Писания',       icon: '📖', color: '#e8f0d8', textColor: '#3a5a10', url: 'https://golosmira.com:9022/Bible' },
+  { id: 'slovo',  name: 'Слово Благодати',        desc: 'Проповеди',            icon: '🙏', color: '#f0e8d8', textColor: '#7a4010', url: 'https://c13.radioboss.fm:18516/stream' },
+  { id: 'golos2', name: 'Голос Мира — Музыка',    desc: 'Песнопения',           icon: '🎵', color: '#d8e8f8', textColor: '#104878', url: 'https://golosmira.com:8021/music64.mp3' },
+  { id: 'dwg',    name: 'DWG Radio',              desc: 'Христианское вещание', icon: '✝️',  color: '#f8d8d8', textColor: '#780808', url: 'https://server32349.streamplus.de/;stream.mp3/;type=mp3' },
+  { id: 'twr',    name: 'TWR Radio',              desc: 'Трансмировое радио',   icon: '🌍', color: '#d8f8e8', textColor: '#086040', url: 'https://eu3.fastcast4u.com/proxy/twr0?mp=/;' },
+  { id: 'slovo2', name: 'Открытое Слово',         desc: 'Прямой эфир',          icon: '📻', color: '#ede8d8', textColor: '#5a3808', url: 'https://rt.radioslovo.net:4395/radio' },
+  { id: 'golos1', name: 'Голос Мира — Проповеди', desc: 'Слово и поучение',     icon: '🕊️', color: '#e8d8f8', textColor: '#481878', url: 'https://golosmira.com:8021/rgm.mp3' },
+  { id: 'jt',     name: 'JT Radio',              desc: 'Христианская музыка',   icon: '🎶', color: '#f8ead8', textColor: '#704808', url: 'https://jtradio.net/live192' },
+  { id: 'nl',     name: 'Новая Жизнь',           desc: 'Радио надежды',         icon: '🌱', color: '#d8f8d8', textColor: '#185018', url: 'https://nlradio.net/stream/nlradio-low.aac' },
+  { id: 'share',  name: 'Поделиться',             desc: 'Отправить другу',       icon: '↗',  color: '#d0ead0', textColor: '#1a5010', url: 'share' }
 ];
 
 var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
@@ -292,6 +349,10 @@ var isPlaying = false;
 var isMuted = false;
 var prevVolume = 80;
 var metaInterval = null;
+var keepaliveInterval = null;
+var tocData = null;
+var currentTab = 'radio';
+var searchTimer = null;
 
 if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
   document.getElementById('volume-row').style.display = 'none';
@@ -302,8 +363,30 @@ if (tg) {
   tg.expand();
   tg.setHeaderColor('#c8dff0');
   tg.setBackgroundColor('#eef6fb');
+  tg.BackButton.onClick(function() {
+    if (currentTab === 'toc') {
+      var postsEl = document.getElementById('toc-posts');
+      var searchEl = document.getElementById('toc-search-results');
+      if (postsEl.classList.contains('visible')) { showCategories(); return; }
+      if (searchEl.classList.contains('visible')) { clearSearch(); return; }
+    }
+    tg.BackButton.hide();
+  });
 }
 
+// ── TAB SWITCHING ──
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('radio-tab').classList.toggle('active', tab === 'radio');
+  document.getElementById('toc-tab').classList.toggle('active', tab === 'toc');
+  document.getElementById('tab-radio').classList.toggle('active', tab === 'radio');
+  document.getElementById('tab-toc').classList.toggle('active', tab === 'toc');
+
+  if (tab === 'toc' && !tocData) loadTOC();
+  if (tg) { tab === 'toc' ? tg.BackButton.show() : tg.BackButton.hide(); }
+}
+
+// ── RENDER STATIONS ──
 function renderStations() {
   var list = document.getElementById('stations-list');
   list.innerHTML = '';
@@ -311,21 +394,20 @@ function renderStations() {
     var card = document.createElement('div');
     card.className = 'station-card';
     card.dataset.id = s.id;
-    // Применяем индивидуальный цвет карточки
-    card.style.background = s.color || '#ffffff';
-    card.style.borderColor = (s.textColor || '#333') + '33';
-
+    card.style.background = s.color;
+    card.style.borderColor = s.textColor + '33';
     if (s.url === 'share') {
-      card.innerHTML =
-        '<div class="station-icon">' + s.icon + '</div>' +
-        '<div class="station-name" style="color:' + (s.textColor||'#333') + '">' + s.name + '</div>' +
-        '<div class="station-desc">' + s.desc + '</div>';
+      card.style.justifyContent = 'center';
+      card.style.alignItems = 'center';
+      card.style.textAlign = 'center';
+      card.innerHTML = '<div class="station-icon" style="font-size:30px;right:4px;">' + s.icon + '</div>'
+        + '<div class="station-name" style="color:' + s.textColor + ';font-size:14px;">' + s.name + '</div>'
+        + '<div class="station-desc" style="color:' + s.textColor + '">' + s.desc + '</div>';
     } else {
-      card.innerHTML =
-        '<div class="station-icon">' + s.icon + '</div>' +
-        '<div class="station-name" style="color:' + (s.textColor||'#333') + '">' + s.name + '</div>' +
-        '<div class="station-desc">' + s.desc + '</div>' +
-        '<div class="station-track" id="track-' + s.id + '"></div>';
+      card.innerHTML = '<div class="station-icon">' + s.icon + '</div>'
+        + '<div class="station-name" style="color:' + s.textColor + '">' + s.name + '</div>'
+        + '<div class="station-desc" style="color:' + s.textColor + '">' + s.desc + '</div>'
+        + '<div class="station-track" id="track-' + s.id + '" style="color:' + s.textColor + '"></div>';
     }
     card.addEventListener('click', function() { handleClick(s, card); });
     list.appendChild(card);
@@ -333,18 +415,11 @@ function renderStations() {
 }
 
 function handleClick(station, card) {
-  // Haptic feedback через Telegram API
-  if (tg && tg.HapticFeedback) {
-    tg.HapticFeedback.impactOccurred('light');
-  }
-  // Кнопка поделиться
-  if (station.url === 'share') {
-    shareRadio();
-    return;
-  }
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+  if (station.url === 'share') { shareRadio(); return; }
   if (currentStation && currentStation.id === station.id) { togglePlay(); return; }
   document.querySelectorAll('.station-card').forEach(function(c) {
-    c.classList.remove('active','loading');
+    c.classList.remove('active', 'loading');
     var b = c.querySelector('.playing-badge');
     if (b) b.remove();
   });
@@ -353,92 +428,124 @@ function handleClick(station, card) {
 }
 
 function playStation(station, card) {
-  // Останавливаем текущий поток
   audio.pause();
   stopMetaPolling();
-
-  // Обновляем UI немедленно
+  stopKeepalive();
+  audio.src = station.url;
+  audio.volume = parseInt(document.getElementById('vol-slider').value) / 100;
   currentStation = station;
   document.getElementById('bp-name').textContent = station.name;
   document.getElementById('bp-track').textContent = '';
   document.getElementById('bp-status').textContent = '○ загрузка...';
   document.getElementById('bottom-player').classList.add('visible');
-
-  // Устанавливаем громкость
-  audio.volume = parseInt(document.getElementById('vol-slider').value) / 100;
-
-  // ВАЖНО для Android: вызываем play() синхронно в обработчике жеста
-  // Сначала сбрасываем src чтобы остановить буферизацию
-  audio.src = '';
-  audio.src = station.url;
-
-  // play() должен быть вызван напрямую без промежуточных async операций
-  var playPromise = audio.play();
-
-  if (playPromise !== undefined) {
-    playPromise.then(function() {
-      isPlaying = true;
-      card.classList.remove('loading');
-      card.classList.add('active');
-      updatePlayBtn(true);
-      startMetaPolling(station);
-    }).catch(function(err) {
-      // Если первая попытка не удалась — пробуем ещё раз через 300мс
-      console.log('Play failed, retrying:', err);
-      setTimeout(function() {
-        audio.play().then(function() {
-          isPlaying = true;
-          card.classList.remove('loading');
-          card.classList.add('active');
-          updatePlayBtn(true);
-          startMetaPolling(station);
-        }).catch(function() {
-          card.classList.remove('loading');
-          document.getElementById('bp-status').textContent = '✕ ошибка потока';
-        });
-      }, 300);
-    });
-  } else {
-    // Старые браузеры без Promise
+  audio.load();
+  audio.play().then(function() {
     isPlaying = true;
     card.classList.remove('loading');
     card.classList.add('active');
-    // Add playing badge
-    var oldBadge = card.querySelector('.playing-badge');
-    if (oldBadge) oldBadge.remove();
     var badge = document.createElement('div');
     badge.className = 'playing-badge';
     badge.textContent = '▶ ЭФИР';
     card.appendChild(badge);
     updatePlayBtn(true);
     startMetaPolling(station);
-    // Media Session — название на экране блокировки
+    startKeepalive();
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: station.name,
-        artist: 'Прямой эфир',
-        album: 'От чтения к преображению'
+        title: station.name, artist: 'Прямой эфир', album: 'От чтения к Преображению'
       });
-      navigator.mediaSession.setActionHandler('play', function() { audio.play(); });
-      navigator.mediaSession.setActionHandler('pause', function() { audio.pause(); });
+      navigator.mediaSession.setActionHandler('play', function() { audio.play(); isPlaying = true; updatePlayBtn(true); startKeepalive(); });
+      navigator.mediaSession.setActionHandler('pause', function() { audio.pause(); isPlaying = false; updatePlayBtn(false); stopKeepalive(); });
       navigator.mediaSession.setActionHandler('stop', function() { stopAll(); });
     }
-  }
+  }).catch(function() {
+    card.classList.remove('loading');
+    document.getElementById('bp-status').textContent = '✕ ошибка потока';
+  });
 }
+
+// ── KEEPALIVE — предотвращает паузу через 2-3 минуты ──
+function startKeepalive() {
+  stopKeepalive();
+  keepaliveInterval = setInterval(function() {
+    if (!isPlaying || audio.paused) return;
+    // Трогаем текущее время чтобы браузер не засыпал
+    var t = audio.currentTime;
+    if (t > 0) audio.currentTime = t;
+    // Также обновляем MediaSession state
+    if ('mediaSession' in navigator) {
+      try { navigator.mediaSession.playbackState = 'playing'; } catch(e) {}
+    }
+  }, 25000);
+}
+
+function stopKeepalive() {
+  if (keepaliveInterval) { clearInterval(keepaliveInterval); keepaliveInterval = null; }
+}
+
+// Восстановление после прерывания (звонок, наушники)
+audio.addEventListener('pause', function() {
+  if (isPlaying) {
+    // Небольшая задержка — если пауза была случайной, возобновляем
+    setTimeout(function() {
+      if (isPlaying && audio.paused) {
+        audio.play().catch(function() {});
+      }
+    }, 1000);
+  }
+  document.getElementById('bp-status').textContent = '⏸ пауза';
+});
+
+audio.addEventListener('ended', function() {
+  // Поток завершился — перезапускаем
+  if (isPlaying && currentStation) {
+    setTimeout(function() {
+      audio.load();
+      audio.play().catch(function() {});
+    }, 2000);
+  }
+});
+
+audio.addEventListener('error', function() {
+  document.getElementById('bp-status').textContent = '✕ ошибка потока';
+  // Пробуем перезапустить через 3 секунды
+  if (isPlaying && currentStation) {
+    setTimeout(function() {
+      if (isPlaying) {
+        audio.load();
+        audio.play().catch(function() {});
+      }
+    }, 3000);
+  }
+});
+
+audio.addEventListener('playing', function() {
+  isPlaying = true; setBars(true);
+  document.getElementById('bp-status').textContent = '● в эфире';
+});
+audio.addEventListener('waiting', function() {
+  document.getElementById('bp-status').textContent = '○ загрузка...';
+});
 
 function togglePlay() {
   if (!currentStation) return;
   if (isPlaying) {
-    audio.pause(); isPlaying = false; updatePlayBtn(false); setBars(false); stopMetaPolling();
+    audio.pause(); isPlaying = false; updatePlayBtn(false); setBars(false);
+    stopMetaPolling(); stopKeepalive();
   } else {
-    audio.play(); isPlaying = true; updatePlayBtn(true); setBars(true); startMetaPolling(currentStation);
+    audio.play(); isPlaying = true; updatePlayBtn(true); setBars(true);
+    startMetaPolling(currentStation); startKeepalive();
   }
 }
 
 function stopAll() {
   audio.pause(); audio.src = ''; isPlaying = false; currentStation = null;
-  stopMetaPolling();
-  document.querySelectorAll('.station-card').forEach(function(c) { c.classList.remove('active','loading'); });
+  stopMetaPolling(); stopKeepalive();
+  document.querySelectorAll('.station-card').forEach(function(c) {
+    c.classList.remove('active', 'loading');
+    var b = c.querySelector('.playing-badge');
+    if (b) b.remove();
+  });
   document.querySelectorAll('.station-track').forEach(function(t) { t.textContent = ''; });
   document.getElementById('bottom-player').classList.remove('visible');
   setBars(false);
@@ -491,8 +598,7 @@ function fetchMeta(station) {
         if (el) el.textContent = '♪ ' + d.title;
         document.getElementById('bp-track').textContent = '♪ ' + d.title;
       }
-    })
-    .catch(function() {});
+    }).catch(function() {});
 }
 
 function startMetaPolling(station) {
@@ -503,24 +609,19 @@ function stopMetaPolling() {
   if (metaInterval) { clearInterval(metaInterval); metaInterval = null; }
 }
 
-audio.addEventListener('playing', function() { isPlaying = true; setBars(true); document.getElementById('bp-status').textContent = '● в эфире'; });
-audio.addEventListener('waiting', function() { document.getElementById('bp-status').textContent = '○ загрузка...'; });
-audio.addEventListener('error',   function() { document.getElementById('bp-status').textContent = '✕ ошибка потока'; });
-audio.addEventListener('pause',   function() { document.getElementById('bp-status').textContent = '⏸ пауза'; });
-
 document.getElementById('bp-stop-btn').addEventListener('click', stopAll);
 document.getElementById('bp-play-btn').addEventListener('click', togglePlay);
 
+// ── ПОДЕЛИТЬСЯ ──
 function shareRadio() {
   var shareUrl = BOT_LINK;
   var shareText = '🌳 Христианское радио прямо в Telegram — DWG Radio, Голос Мира, Слово Благодати. Бесплатно, без рекламы.';
   if (tg && tg.openTelegramLink) {
     tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(shareUrl) + '&text=' + encodeURIComponent(shareText));
   } else {
-    navigator.clipboard.writeText(shareUrl).then(function() { showToast('Ссылка скопирована!'); }).catch(function() {});
+    navigator.clipboard.writeText(shareUrl).then(function() { showToast('✓ Ссылка скопирована!'); }).catch(function() {});
   }
 }
-
 function showToast(msg) {
   var toast = document.getElementById('share-toast');
   toast.textContent = msg;
@@ -528,12 +629,150 @@ function showToast(msg) {
   setTimeout(function() { toast.classList.remove('show'); }, 2500);
 }
 
+// ══════════════════════════════════════
+// ОГЛАВЛЕНИЕ
+// ══════════════════════════════════════
+var CAT_COLORS = {
+  '📖 Библия и толкование':      { bg: '#e0f0e0', text: '#1a5a1a', border: '#2a8a2a' },
+  '✝️ Богословие':                { bg: '#dce8f8', text: '#0a3878', border: '#1a68c8' },
+  '😔 Теодицея':                  { bg: '#ece0f8', text: '#4a1078', border: '#8a30c8' },
+  '🙏 Молитва и духовная жизнь': { bg: '#d8f0e8', text: '#085840', border: '#18a870' },
+  '🌱 Христианская жизнь':       { bg: '#e8f8d8', text: '#286010', border: '#48a820' },
+  '💬 Размышления и цитаты':     { bg: '#dce0f8', text: '#182878', border: '#3848c8' },
+  '📚 Достоевский':               { bg: '#f0f0f0', text: '#282828', border: '#686868' },
+  '📚 Книги и авторы':            { bg: '#f8f0d8', text: '#583808', border: '#c87818' },
+  '📅 Челлендж: Лука':            { bg: '#f8dce0', text: '#680818', border: '#c82838' },
+  '📔 Духовный дневник':          { bg: '#f8f0d8', text: '#683808', border: '#d86818' },
+  '🎤 Проповедь и семинар':       { bg: '#f0e0f8', text: '#581878', border: '#a838c8' },
+  '🏛️ История и церковь':        { bg: '#f0ebe8', text: '#3a1808', border: '#8a4828' },
+  '🎄 Праздники':                 { bg: '#e8f8e0', text: '#185010', border: '#38a820' },
+  '😄 Юмор':                      { bg: '#fffade', text: '#5a4000', border: '#d8a800' },
+  '📰 Новости':                   { bg: '#fff8d8', text: '#583800', border: '#c87800' },
+  '📻 Анонсы канала':             { bg: '#d8f0f8', text: '#084868', border: '#1888c8' },
+};
+
+function loadTOC() {
+  document.getElementById('toc-stats').textContent = 'Загрузка...';
+  fetch(POSTS_URL + '?t=' + Date.now())
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      tocData = data;
+      document.getElementById('toc-stats').textContent = data.total + ' постов · ' + data.topics.length + ' категорий';
+      renderCategories();
+    })
+    .catch(function() {
+      document.getElementById('toc-stats').textContent = 'Ошибка загрузки';
+      document.getElementById('cat-grid').innerHTML = '<div class="toc-error" style="grid-column:1/-1;">Не удалось загрузить оглавление</div>';
+    });
+}
+
+function renderCategories() {
+  var grid = document.getElementById('cat-grid');
+  grid.innerHTML = '';
+  tocData.topics.forEach(function(topic, i) {
+    var colors = CAT_COLORS[topic.name] || { bg: '#f0f0f0', text: '#333', border: '#999' };
+    var card = document.createElement('div');
+    card.className = 'cat-card';
+    card.style.background = colors.bg;
+    card.style.borderColor = colors.border + '66';
+    card.style.animationDelay = (i * 0.04) + 's';
+    var iconMatch = topic.name.match(/^([\u{1F300}-\u{1FFFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}][\uFE0F\u20D0-\u20FF]?|[\u{1F1E0}-\u{1F1FF}]{2})/u);
+    var icon = iconMatch ? iconMatch[0] : '📌';
+    var name = topic.name.replace(/^[\u{1F300}-\u{1FFFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}][\uFE0F\u20D0-\u20FF]?\s*/u, '');
+    card.innerHTML = '<div class="cat-bg-icon">' + icon + '</div>'
+      + '<div class="cat-name" style="color:' + colors.text + '">' + name + '</div>'
+      + '<div class="cat-count" style="color:' + colors.text + '">' + topic.count + ' постов</div>';
+    card.addEventListener('click', function() { openCategory(topic.name); });
+    grid.appendChild(card);
+  });
+}
+
+function openCategory(catName) {
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+  var posts = tocData.posts.filter(function(p) { return p.topics && p.topics.indexOf(catName) !== -1; });
+  document.getElementById('posts-cat-title').textContent = catName;
+  document.getElementById('posts-list').innerHTML = '';
+  posts.forEach(function(p) {
+    var a = document.createElement('a');
+    a.className = 'post-card';
+    a.href = p.url;
+    a.target = '_blank';
+    a.innerHTML = '<div class="post-title">' + escHtml(p.title) + '</div>'
+      + (p.preview ? '<div class="post-preview">' + escHtml(p.preview) + '</div>' : '')
+      + '<div class="post-meta"><span class="post-date">' + formatDate(p.date) + '</span><span class="post-link">Открыть →</span></div>';
+    document.getElementById('posts-list').appendChild(a);
+  });
+  document.getElementById('toc-categories').style.display = 'none';
+  document.getElementById('toc-search-results').classList.remove('visible');
+  document.getElementById('toc-posts').classList.add('visible');
+  if (tg) tg.BackButton.show();
+}
+
+function showCategories() {
+  document.getElementById('toc-posts').classList.remove('visible');
+  document.getElementById('toc-search-results').classList.remove('visible');
+  document.getElementById('toc-categories').style.display = 'block';
+  document.getElementById('toc-search-input').value = '';
+  if (tg) tg.BackButton.hide();
+}
+
+function onTocSearch(query) {
+  clearTimeout(searchTimer);
+  if (!query.trim()) { clearSearch(); return; }
+  searchTimer = setTimeout(function() { runSearch(query.trim().toLowerCase()); }, 200);
+}
+
+function runSearch(q) {
+  if (!tocData) return;
+  document.getElementById('toc-categories').style.display = 'none';
+  document.getElementById('toc-posts').classList.remove('visible');
+  document.getElementById('toc-search-results').classList.add('visible');
+  if (tg) tg.BackButton.show();
+  var results = tocData.posts.filter(function(p) {
+    return (p.title && p.title.toLowerCase().indexOf(q) !== -1) ||
+           (p.preview && p.preview.toLowerCase().indexOf(q) !== -1);
+  });
+  document.getElementById('search-results-title').textContent = 'Найдено: ' + results.length;
+  var list = document.getElementById('search-list');
+  list.innerHTML = '';
+  results.forEach(function(p) {
+    var a = document.createElement('a');
+    a.className = 'post-card';
+    a.href = p.url;
+    a.target = '_blank';
+    a.innerHTML = '<div class="post-title">' + escHtml(p.title) + '</div>'
+      + (p.preview ? '<div class="post-preview">' + escHtml(p.preview) + '</div>' : '')
+      + '<div class="post-meta"><span class="post-date">' + formatDate(p.date) + '</span><span class="post-link">Открыть →</span></div>';
+    list.appendChild(a);
+  });
+}
+
+function clearSearch() {
+  document.getElementById('toc-search-results').classList.remove('visible');
+  document.getElementById('toc-posts').classList.remove('visible');
+  document.getElementById('toc-categories').style.display = 'block';
+  if (tg) tg.BackButton.hide();
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  try { return new Date(d).toLocaleDateString('ru-RU', { day:'numeric', month:'long', year:'numeric' }); }
+  catch(e) { return d; }
+}
+
+// ── ПРОВЕРКА ПОДПИСКИ ──
 function showMain() {
   renderStations();
   document.getElementById('loading-screen').classList.add('hidden');
   setTimeout(function() {
     document.getElementById('loading-screen').style.display = 'none';
     document.getElementById('main-screen').classList.add('visible');
+    document.getElementById('radio-tab').classList.add('active');
   }, 500);
 }
 
@@ -541,19 +780,17 @@ function showDenied(reason) {
   var text = document.getElementById('denied-text');
   var btn = document.getElementById('btn-subscribe');
   var recheck = document.getElementById('recheck-btn');
-
   if (reason === 'no_telegram') {
     text.textContent = 'Откройте радио через Telegram — нажмите кнопку ниже.';
     btn.textContent = '📱 Открыть в Telegram';
     btn.href = BOT_LINK;
     recheck.style.display = 'none';
   } else {
-    text.textContent = 'Радио доступно только подписчикам канала «От чтения к преображению».';
+    text.textContent = 'Радио доступно только подписчикам канала «От чтения к Преображению».';
     btn.textContent = '🌿 Подписаться на канал';
-    btn.href = 'https://t.me/Testovuj';
+    btn.href = 'https://t.me/Chtenie_Preobrazenie';
     recheck.style.display = 'block';
   }
-
   document.getElementById('loading-screen').classList.add('hidden');
   setTimeout(function() {
     document.getElementById('loading-screen').style.display = 'none';
@@ -564,70 +801,34 @@ function showDenied(reason) {
 function checkSubscription() {
   if (!tg) { showDenied('no_telegram'); return; }
   if (!tg.initData || tg.initData === '') { showDenied('no_data'); return; }
-
   fetch(BACKEND_URL + '/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ init_data: tg.initData })
   })
-  .then(function(res) {
-    if (!res.ok) throw new Error('server_error');
-    return res.json();
-  })
-  .then(function(data) {
-    if (data.allowed) { showMain(); } else { showDenied('not_subscribed'); }
-  })
-  .catch(function() {
-    showDenied('error');
-  });
+  .then(function(res) { if (!res.ok) throw new Error('err'); return res.json(); })
+  .then(function(data) { if (data.allowed) { showMain(); } else { showDenied('not_subscribed'); } })
+  .catch(function() { showDenied('error'); });
 }
 
 function recheckSubscription() {
   var btn = document.getElementById('recheck-btn');
   var msg = document.getElementById('recheck-msg');
   btn.disabled = true; btn.textContent = '⏳ Проверяю...'; msg.textContent = '';
-
-  if (!tg || !tg.initData || tg.initData === '') {
-    msg.textContent = 'Откройте радио через Telegram.';
-    btn.disabled = false; btn.textContent = '✓ Я подписался — проверить';
-    return;
-  }
-
+  if (!tg || !tg.initData) { msg.textContent = 'Откройте через Telegram.'; btn.disabled = false; btn.textContent = '✓ Я подписался — проверить'; return; }
   fetch(BACKEND_URL + '/verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ init_data: tg.initData })
   })
   .then(function(res) { return res.json(); })
   .then(function(data) {
-    if (data.allowed) {
-      document.getElementById('denied-screen').classList.remove('visible');
-      showMain();
-    } else {
-      msg.textContent = 'Подписка не найдена. Попробуйте ещё раз.';
-      btn.disabled = false; btn.textContent = '✓ Я подписался — проверить';
-    }
+    if (data.allowed) { document.getElementById('denied-screen').classList.remove('visible'); showMain(); }
+    else { msg.textContent = 'Подписка не найдена. Попробуйте ещё раз.'; btn.disabled = false; btn.textContent = '✓ Я подписался — проверить'; }
   })
-  .catch(function() {
-    msg.textContent = 'Ошибка соединения. Попробуйте ещё раз.';
-    btn.disabled = false; btn.textContent = '✓ Я подписался — проверить';
-  });
+  .catch(function() { msg.textContent = 'Ошибка соединения.'; btn.disabled = false; btn.textContent = '✓ Я подписался — проверить'; });
 }
 
-// Останавливаем поток при закрытии приложения
-window.addEventListener('beforeunload', function() {
-  audio.pause();
-  audio.src = '';
-});
-
-// Останавливаем когда Telegram скрывает Mini App
-if (tg) {
-  tg.onEvent('viewportChanged', function(e) {
-    if (e && e.isStateStable === false) {
-      // приложение сворачивается
-    }
-  });
-}
+window.addEventListener('beforeunload', function() { audio.pause(); audio.src = ''; });
 
 checkSubscription();
 </script>
