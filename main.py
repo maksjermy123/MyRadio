@@ -1,29 +1,27 @@
 import json
 import os
 import re
+import asyncio
 from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
-from aiogram.filters import ChatMemberUpdatedFilter
-from aiogram.types import ChatMemberUpdated
-
-import asyncio
 
 # -----------------------------
 # CONFIG
 # -----------------------------
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_USERNAME = "Chtenie_Preobrazenie"  # твой канал
+CHANNEL_USERNAME = "Chtenie_Preobrazenie"
 POSTS_FILE = "posts.json"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
+router = Router()
 
 # -----------------------------
 # ТАБЛИЦА ХЭШТЕГОВ → КАТЕГОРИИ
@@ -129,12 +127,11 @@ def map_hashtags_to_categories(hashtags):
 
     return list(categories)
 
-
 # -----------------------------
 # ОБРАБОТКА НОВЫХ ПОСТОВ
 # -----------------------------
 
-@dp.channel_post()
+@router.channel_post()
 async def handle_new_post(message: types.Message):
     posts = load_posts()
 
@@ -170,7 +167,6 @@ async def handle_new_post(message: types.Message):
 
     save_posts(posts)
 
-
 # -----------------------------
 # FASTAPI
 # -----------------------------
@@ -185,24 +181,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/posts")
 async def get_posts():
     return JSONResponse(load_posts())
 
-
 @app.get("/")
 async def root():
     return {"status": "ok"}
-
 
 # -----------------------------
 # ЗАПУСК БОТА В ФОНЕ
 # -----------------------------
 
 async def start_bot():
+    dp.include_router(router)
     await dp.start_polling(bot)
-
 
 @app.on_event("startup")
 async def on_startup():
