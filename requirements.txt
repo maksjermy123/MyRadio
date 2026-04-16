@@ -3,3 +3,4 @@ uvicorn
 httpx
 pydantic
 python-multipart
+aiogram==3.27.0
