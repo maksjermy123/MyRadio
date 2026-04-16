@@ -19,6 +19,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_USERNAME = "Chtenie_Preobrazenie"
 POSTS_FILE = "posts.json"
 
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set in environment variables!")
+
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
@@ -187,7 +190,7 @@ async def get_posts():
 
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {"status": "ok", "bot": "running"}
 
 # -----------------------------
 # ЗАПУСК БОТА В ФОНЕ
@@ -195,8 +198,10 @@ async def root():
 
 async def start_bot():
     dp.include_router(router)
+    print("Starting bot polling...")
     await dp.start_polling(bot)
 
 @app.on_event("startup")
 async def on_startup():
+    print("FastAPI started. Launching bot...")
     asyncio.create_task(start_bot())
