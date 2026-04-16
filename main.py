@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 # -----------------------------
 # CONFIG
@@ -22,7 +23,11 @@ POSTS_FILE = "posts.json"
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set in environment variables!")
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 router = Router()
 
