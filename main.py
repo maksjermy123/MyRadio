@@ -13,7 +13,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from urllib.parse import unquote, parse_qsl
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -31,7 +31,7 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
-    allow_methods=["POST", "GET"],
+    allow_methods=["POST", "GET", "HEAD"],
     allow_headers=["*"],
 )
 
@@ -76,6 +76,8 @@ IGNORE_TAGS = {"#отчтениякпреображению"}
 _github_lock = asyncio.Lock()
 
 
+# ── Парсинг ───────────────────────────────────────────────────────
+
 def extract_hashtags(message: dict) -> list:
     tags = []
     for field in ("entities", "caption_entities"):
@@ -110,6 +112,8 @@ def extract_title_and_preview(message: dict) -> tuple:
     return lines[0][:120], (" ".join(lines[:4])[:300] if len(lines) > 1 else "")
 
 
+# ── GitHub API ────────────────────────────────────────────────────
+
 def _gh_headers() -> dict:
     return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
@@ -129,8 +133,11 @@ async def fetch_posts_json(client: httpx.AsyncClient) -> tuple:
 async def push_posts_json(client: httpx.AsyncClient, data: dict, sha) -> bool:
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     b64 = base64.b64encode(json.dumps(data, ensure_ascii=False, indent=2).encode()).decode()
-    payload = {"message": f"auto: posts [{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}]",
-               "content": b64, "branch": GITHUB_BRANCH}
+    payload = {
+        "message": f"auto: posts [{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}]",
+        "content": b64,
+        "branch": GITHUB_BRANCH,
+    }
     if sha:
         payload["sha"] = sha
     resp = await client.put(url, headers=_gh_headers(), json=payload)
@@ -138,6 +145,7 @@ async def push_posts_json(client: httpx.AsyncClient, data: dict, sha) -> bool:
 
 
 def recalc_topics(posts: list) -> list:
+    """Пересчитывает категории. Каждый пост считается один раз даже с несколькими тегами."""
     counts = {}
     for p in posts:
         for t in p.get("topics", []):
@@ -145,7 +153,13 @@ def recalc_topics(posts: list) -> list:
     return [{"name": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
 
 
-async def add_post_to_github(message: dict) -> str:
+# ── Добавление нового поста ───────────────────────────────────────
+
+async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
+    """
+    Добавляет новый пост или обновляет существующий (при редактировании).
+    Защита от race condition через asyncio.Lock + 3 попытки при конфликте sha.
+    """
     if not GITHUB_TOKEN:
         log.error("GITHUB_TOKEN не задан")
         return "error_no_github_token"
@@ -153,16 +167,23 @@ async def add_post_to_github(message: dict) -> str:
     msg_id = message.get("message_id") or message.get("id")
     tags   = extract_hashtags(message)
     topics = hashtags_to_topics(tags)
-    log.info(f"Пост {msg_id} | теги: {tags} | темы: {topics}")
+    log.info(f"{'Правка' if is_edit else 'Пост'} {msg_id} | теги: {tags} | темы: {topics}")
 
     if not topics:
-        log.info(f"Пост {msg_id}: нет тегов — пропускаем")
+        log.info(f"Пост {msg_id}: нет известных тегов — пропускаем")
         return "no_topics"
 
     title, preview = extract_title_and_preview(message)
-    date_str = datetime.fromtimestamp(message.get("date", 0), tz=timezone.utc).strftime("%Y-%m-%d")
-    new_post = {"id": msg_id, "date": date_str, "title": title, "preview": preview,
-                "url": f"https://t.me/{CHANNEL_ID.lstrip('@')}/{msg_id}", "topics": topics}
+    date_raw = message.get("date", 0)
+    date_str = datetime.fromtimestamp(date_raw, tz=timezone.utc).strftime("%Y-%m-%d")
+    new_post = {
+        "id":      msg_id,
+        "date":    date_str,
+        "title":   title,
+        "preview": preview,
+        "url":     f"https://t.me/{CHANNEL_ID.lstrip('@')}/{msg_id}",
+        "topics":  topics,
+    }
 
     async with _github_lock:
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -174,20 +195,31 @@ async def add_post_to_github(message: dict) -> str:
                     await asyncio.sleep(1)
                     continue
 
-                if msg_id in {p["id"] for p in posts_data.get("posts", [])}:
-                    log.info(f"Пост {msg_id} уже есть")
-                    return "skipped_duplicate"
+                posts = posts_data.get("posts", [])
+                existing_ids = {p["id"] for p in posts}
 
-                posts_data["posts"].append(new_post)
-                posts_data["posts"].sort(key=lambda p: p["id"])
+                if msg_id in existing_ids:
+                    if is_edit:
+                        # Обновляем существующий пост
+                        posts_data["posts"] = [new_post if p["id"] == msg_id else p for p in posts]
+                        action = "updated"
+                    else:
+                        log.info(f"Пост {msg_id} уже есть — пропускаем")
+                        return "skipped_duplicate"
+                else:
+                    posts_data["posts"].append(new_post)
+                    action = "added"
+
+                # Сортировка: новые сверху (по убыванию id)
+                posts_data["posts"].sort(key=lambda p: p["id"], reverse=True)
                 posts_data["topics"]  = recalc_topics(posts_data["posts"])
                 posts_data["total"]   = len(posts_data["posts"])
                 posts_data["updated"] = date_str
 
                 try:
                     if await push_posts_json(client, posts_data, sha):
-                        log.info(f"Пост {msg_id} добавлен ✓")
-                        return "added"
+                        log.info(f"Пост {msg_id} — {action} ✓")
+                        return action
                     log.warning(f"Конфликт sha, попытка {attempt+1}/3")
                     await asyncio.sleep(0.5)
                 except Exception as e:
@@ -198,7 +230,7 @@ async def add_post_to_github(message: dict) -> str:
     return "error_all_retries_failed"
 
 
-# ── Проверка подписки (без изменений) ─────────────────────────────
+# ── Проверка подписки ─────────────────────────────────────────────
 
 class VerifyRequest(BaseModel):
     init_data: str
@@ -260,14 +292,16 @@ async def fetch_icy_metadata(stream_url: str):
             return None
         ssl_ctx = ssl.create_default_context() if p.scheme == "https" else None
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port, ssl=ssl_ctx, server_hostname=host if ssl_ctx else None),
+            asyncio.open_connection(host, port, ssl=ssl_ctx,
+                                    server_hostname=host if ssl_ctx else None),
             timeout=5.0)
         writer.write(f"GET {path} HTTP/1.0\r\nHost: {host}\r\nIcy-MetaData: 1\r\n"
                      f"User-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n".encode())
         await writer.drain()
         meta_interval = 0
         while True:
-            line = (await asyncio.wait_for(reader.readline(), timeout=5.0)).decode("utf-8", errors="ignore").strip()
+            line = (await asyncio.wait_for(reader.readline(), timeout=5.0)
+                    ).decode("utf-8", errors="ignore").strip()
             if not line:
                 break
             if ":" in line:
@@ -293,7 +327,8 @@ async def fetch_icy_metadata(stream_url: str):
             if not chunk: break
             meta += chunk
         writer.close()
-        m = re.search(r"StreamTitle='([^']*)'", meta.decode("utf-8", errors="ignore").rstrip("\x00"))
+        m = re.search(r"StreamTitle='([^']*)'",
+                      meta.decode("utf-8", errors="ignore").rstrip("\x00"))
         if m:
             return m.group(1).strip() or None
     except Exception:
@@ -301,6 +336,11 @@ async def fetch_icy_metadata(stream_url: str):
 
 
 # ── Эндпоинты ─────────────────────────────────────────────────────
+
+@app.head("/")
+async def root_head():
+    """HEAD для UptimeRobot — отвечаем 200 без тела."""
+    return Response(status_code=200)
 
 @app.get("/")
 async def root():
@@ -371,21 +411,31 @@ async def webhook(request: Request):
     keys = [k for k in update if k != "update_id"]
     log.info(f"▶ update_id={update_id} | поля: {keys}")
 
-    # Принимаем channel_post (основной) и message (запасной вариант)
-    message = update.get("channel_post") or update.get("message")
+    # Новый пост канала
+    message = update.get("channel_post")
+    is_edit = False
+
+    # Редактирование существующего поста
+    if not message:
+        message = update.get("edited_channel_post")
+        is_edit = True
+
+    # Запасной вариант
+    if not message:
+        message = update.get("message")
+        is_edit = False
 
     if not message:
         log.info(f"update_id={update_id}: не пост — пропускаем")
         return {"ok": True, "action": "ignored", "fields": keys}
 
-    # Проверяем что пост из нашего канала
     chat_username = (message.get("chat") or {}).get("username", "")
     expected = CHANNEL_ID.lstrip("@").lower()
     if chat_username and chat_username.lower() != expected:
         log.warning(f"update_id={update_id}: чужой чат @{chat_username} — пропускаем")
         return {"ok": True, "action": "ignored_wrong_chat"}
 
-    result = await add_post_to_github(message)
+    result = await upsert_post_to_github(message, is_edit=is_edit)
     return {"ok": True, "action": result, "post_id": message.get("message_id")}
 
 
@@ -397,7 +447,11 @@ async def set_webhook(request: Request):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": webhook_url, "allowed_updates": ["channel_post", "message"]})
+            json={
+                "url": webhook_url,
+                # Добавили edited_channel_post для отслеживания правок
+                "allowed_updates": ["channel_post", "edited_channel_post", "message"],
+            })
         data = resp.json()
     log.info(f"setWebhook → {data}")
     return {"ok": data.get("ok"), "webhook_url": webhook_url, "telegram_response": data}
@@ -421,6 +475,10 @@ async def debug_last():
         try:
             data, _ = await fetch_posts_json(client)
             posts = data.get("posts", [])
-            return {"total": len(posts), "updated": data.get("updated"), "last_5": posts[-5:]}
+            return {
+                "total": len(posts),
+                "updated": data.get("updated"),
+                "last_5": posts[:5],  # первые 5 = самые новые (сортировка новые сверху)
+            }
         except Exception as e:
             return {"error": str(e)}
