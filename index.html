@@ -682,14 +682,30 @@ function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/<
 function fmtD(d){if(!d)return'';try{return new Date(d).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});}catch(e){return d;}}
 
 /* ═══ ПОДПИСКА ═══ */
+function getStartTab(){
+  /* Читаем параметр из URL:
+     tg://resolve?...&startapp=radio  → Telegram передаёт через tg.initDataUnsafe
+     или напрямую из хэша: #radio / #toc */
+  try{
+    var sp = (tg&&tg.initDataUnsafe&&tg.initDataUnsafe.start_param)||'';
+    if(sp==='radio') return 'radio';
+    if(sp==='toc')   return 'toc';
+  }catch(e){}
+  var hash = window.location.hash.replace('#','').toLowerCase();
+  if(hash==='radio') return 'radio';
+  if(hash==='toc')   return 'toc';
+  return 'toc'; // по умолчанию — оглавление
+}
 function showMain(){
   document.getElementById('ls').classList.add('hidden');
   setTimeout(function(){
     document.getElementById('ls').style.display='none';
     document.getElementById('ms').classList.add('vis');
-    document.getElementById('toc-tab').classList.add('active');
-    document.getElementById('tb-toc').classList.add('active');
-    loadTOC();
+    var tab = getStartTab();
+    document.getElementById(tab+'-tab').classList.add('active');
+    document.getElementById('tb-'+tab).classList.add('active');
+    if(tab==='toc') loadTOC();
+    else renderStns();
   },450);
 }
 function showDenied(reason){
