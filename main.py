@@ -181,7 +181,7 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
         "date":    date_str,
         "title":   title,
         "preview": preview,
-        "url":     f"https://t.me/{CHANNEL_ID.lstrip('@')}/{msg_id}",
+        "url":     f"https://t.me/{(message.get('chat') or {}).get('username', None) or CHANNEL_ID.lstrip('@')}/{msg_id}",
         "topics":  topics,
     }
 
@@ -429,10 +429,17 @@ async def webhook(request: Request):
         log.info(f"update_id={update_id}: не пост — пропускаем")
         return {"ok": True, "action": "ignored", "fields": keys}
 
-    chat_username = (message.get("chat") or {}).get("username", "")
-    expected = CHANNEL_ID.lstrip("@").lower()
-    if chat_username and chat_username.lower() != expected:
-        log.warning(f"update_id={update_id}: чужой чат @{chat_username} — пропускаем")
+    chat          = message.get("chat") or {}
+    chat_username = chat.get("username", "")
+    chat_id_num   = str(chat.get("id", ""))
+    expected      = CHANNEL_ID.lstrip("@").lower()
+
+    # Принимаем если совпадает username ИЛИ числовой id
+    username_match = bool(chat_username and chat_username.lower() == expected)
+    id_match       = bool(chat_id_num and (chat_id_num == expected or chat_id_num == CHANNEL_ID))
+
+    if not username_match and not id_match:
+        log.warning(f"update_id={update_id}: чужой чат @{chat_username} id={chat_id_num} — пропускаем")
         return {"ok": True, "action": "ignored_wrong_chat"}
 
     result = await upsert_post_to_github(message, is_edit=is_edit)
