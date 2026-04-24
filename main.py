@@ -79,15 +79,25 @@ _github_lock = asyncio.Lock()
 # ── Парсинг ───────────────────────────────────────────────────────
 
 def extract_hashtags(message: dict) -> list:
+    """
+    Telegram передаёт offset/length в UTF-16 единицах.
+    Эмодзи (💔, 🌿 и др.) занимают 2 единицы — поэтому нужен UTF-16 срез.
+    """
     tags = []
     for field in ("entities", "caption_entities"):
         entities = message.get(field) or []
         text_key = "text" if field == "entities" else "caption"
         text = message.get(text_key, "") or ""
+        text_utf16 = text.encode("utf-16-le")
         for ent in entities:
             if ent.get("type") == "hashtag":
-                tag = text[ent["offset"]: ent["offset"] + ent["length"]].lower()
-                tags.append(tag)
+                offset = ent["offset"] * 2
+                length = ent["length"] * 2
+                try:
+                    tag = text_utf16[offset: offset + length].decode("utf-16-le").lower()
+                    tags.append(tag)
+                except Exception:
+                    pass
     return tags
 
 
