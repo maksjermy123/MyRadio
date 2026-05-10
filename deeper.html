@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>📚 Глубже — От чтения к Преображению</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f5f0e8; --card: #fffdf8; --accent: #2e7d32; --accent2: #4caf50;
+      --text: #2c2c2c; --muted: #7a7a6e; --border: #e0d8cc;
+      --shadow: 0 2px 12px rgba(0,0,0,0.07); --quote-bg: #f7f3ea;
+      --chip-bg: #e8f5e9; --skeleton: #e8e2d8; --skeleton2: #f0ebe2;
+    }
+    .dark {
+      --bg: #1a1a1a; --card: #242424; --accent: #4caf50; --accent2: #66bb6a;
+      --text: #e8e8e8; --muted: #888; --border: #333;
+      --shadow: 0 2px 12px rgba(0,0,0,0.3); --quote-bg: #1e2a1e;
+      --chip-bg: #1e2a1e; --skeleton: #2e2e2e; --skeleton2: #383838;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Nunito', sans-serif; background: var(--bg); color: var(--text);
+      min-height: 100vh; padding: 0 0 48px;
+      transition: background 0.3s, color 0.3s; overscroll-behavior-y: contain;
+    }
+    #ptr { display:flex; align-items:center; justify-content:center; height:0; overflow:hidden;
+      transition:height 0.2s; color:var(--muted); font-size:0.85rem; gap:8px; }
+    #ptr.visible { height:52px; }
+    #ptr .ptr-icon { font-size:1.2rem; transition:transform 0.3s; }
+    #ptr.ready .ptr-icon { transform:rotate(180deg); }
+    .header {
+      background: var(--accent); color:#fff; padding:14px 16px 12px;
+      position:sticky; top:0; z-index:10;
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .header-left h1 { font-family:'Cormorant Garamond',serif; font-size:1.4rem; font-weight:600; }
+    .header-left p { font-size:0.75rem; opacity:0.85; margin-top:1px; }
+    .skeleton-wrap { padding:16px 12px; display:flex; flex-direction:column; gap:14px; }
+    .skeleton-card { background:var(--card); border-radius:14px; overflow:hidden; box-shadow:var(--shadow); }
+    .skeleton-header { height:44px; background:var(--skeleton); animation:shimmer 1.4s infinite; }
+    .skeleton-line { height:14px; border-radius:7px; background:var(--skeleton);
+      margin:14px 14px 0; animation:shimmer 1.4s infinite; }
+    .skeleton-line.short { width:60%; margin-bottom:14px; }
+    .skeleton-line.med   { width:80%; }
+    .skeleton-line.long  { width:95%; }
+    .skeleton-line.last  { margin-bottom:14px; }
+    @keyframes shimmer {
+      0%  { background:var(--skeleton); }
+      50% { background:var(--skeleton2); }
+      100%{ background:var(--skeleton); }
+    }
+    .state-box { text-align:center; padding:60px 24px; color:var(--muted); }
+    .state-box .icon { font-size:2.5rem; margin-bottom:12px; }
+    .state-box p { font-size:0.95rem; line-height:1.6; }
+    .state-box .retry-btn {
+      margin-top:16px; padding:10px 24px; background:var(--accent); color:#fff;
+      border:none; border-radius:999px; font-family:'Nunito',sans-serif;
+      font-size:0.85rem; font-weight:700; cursor:pointer;
+    }
+    .countdown { font-weight:700; color:var(--accent); }
+    .content { padding:14px 12px; display:flex; flex-direction:column; gap:12px; }
+    .card {
+      background:var(--card); border-radius:14px; box-shadow:var(--shadow); overflow:hidden;
+      opacity:0; transform:translateY(10px); animation:fadeUp 0.35s ease forwards;
+    }
+    .card:nth-child(1){animation-delay:0.05s}.card:nth-child(2){animation-delay:0.10s}
+    .card:nth-child(3){animation-delay:0.15s}.card:nth-child(4){animation-delay:0.20s}
+    .card:nth-child(5){animation-delay:0.25s}
+    @keyframes fadeUp { to{opacity:1;transform:translateY(0);} }
+    .card-header {
+      display:flex; align-items:center; gap:8px; padding:12px 14px 10px;
+      border-bottom:1px solid var(--border);
+    }
+    .card-header h2 {
+      font-family:'Cormorant Garamond',serif; font-size:1.05rem;
+      font-weight:600; color:var(--accent); flex:1;
+    }
+    .topics { display:flex; flex-wrap:wrap; gap:6px; padding:10px 14px 12px; }
+    .topic-chip {
+      background:var(--chip-bg); color:var(--accent); font-size:0.72rem;
+      font-weight:700; padding:3px 10px; border-radius:999px;
+    }
+    .related-item {
+      display:flex; align-items:center; gap:12px; padding:11px 14px;
+      border-bottom:1px solid var(--border); cursor:pointer;
+      transition:background 0.12s; -webkit-tap-highlight-color:transparent;
+    }
+    .related-item:last-child { border-bottom:none; }
+    .related-item:active { background:var(--border); }
+    .related-num {
+      width:28px; height:28px; border-radius:50%; background:var(--accent); color:#fff;
+      font-size:0.75rem; font-weight:700; display:flex; align-items:center;
+      justify-content:center; flex-shrink:0;
+    }
+    .related-title { font-size:0.88rem; font-weight:700; color:var(--accent); }
+    .related-sub { font-size:0.75rem; color:var(--muted); margin-top:1px; }
+    .related-arrow { margin-left:auto; color:var(--muted); font-size:0.9rem; }
+    .bible-item { padding:13px 14px 11px; border-bottom:1px solid var(--border); }
+    .bible-item:last-child { border-bottom:none; }
+    .bible-role {
+      font-size:0.65rem; font-weight:700; color:var(--muted);
+      text-transform:uppercase; letter-spacing:0.08em; margin-bottom:3px;
+    }
+    .bible-ref-row { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+    .bible-ref {
+      font-family:'Cormorant Garamond',serif; font-size:1.12rem;
+      font-weight:600; color:var(--accent); line-height:1.2;
+    }
+    .bible-verse-count { font-size:0.7rem; color:var(--muted); font-weight:600; }
+    .bible-theme { font-size:0.78rem; color:var(--muted); margin-top:3px; line-height:1.4; }
+    .bible-text-wrap { margin-top:9px; position:relative; }
+    .bible-text {
+      font-family:'Cormorant Garamond',serif; font-size:1rem; line-height:1.65;
+      color:var(--text); font-style:italic; padding:9px 11px;
+      background:var(--quote-bg); border-left:3px solid var(--accent2);
+      border-radius:0 6px 6px 0; max-height:150px; overflow:hidden;
+      position:relative; transition:max-height 0.3s ease;
+    }
+    .bible-text.expanded { max-height:9999px; }
+    .bible-text:not(.expanded)::after {
+      content:''; position:absolute; bottom:0; left:0; right:0; height:44px;
+      background:linear-gradient(transparent, var(--quote-bg)); pointer-events:none;
+    }
+    .expand-btn {
+      display:flex; align-items:center; justify-content:center; gap:4px;
+      width:100%; font-size:0.75rem; font-weight:700; color:var(--accent);
+      background:none; border:none; padding:6px 0 2px; cursor:pointer;
+      font-family:'Nunito',sans-serif; -webkit-tap-highlight-color:transparent;
+    }
+    .expand-btn.hidden { display:none; }
+    .trans-links { margin-top:9px; }
+    .trans-btn {
+      font-size:0.75rem; font-weight:700; padding:5px 14px; border-radius:999px;
+      background:var(--accent); color:#fff; border:none; cursor:pointer;
+      font-family:'Nunito',sans-serif; -webkit-tap-highlight-color:transparent;
+      transition:opacity 0.15s;
+    }
+    .trans-btn:active { opacity:0.8; }
+    .theology-item { padding:13px 14px 11px; border-bottom:1px solid var(--border); }
+    .theology-item:last-child { border-bottom:none; }
+    .theology-author {
+      font-size:0.72rem; font-weight:700; color:var(--accent);
+      text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;
+    }
+    .theology-title { font-size:0.72rem; color:var(--muted); margin-bottom:8px; }
+    .theology-text {
+      font-family:'Cormorant Garamond',serif; font-size:1rem; line-height:1.65;
+      font-style:italic; color:var(--text); padding:8px 11px;
+      background:var(--quote-bg); border-left:3px solid var(--accent2);
+      border-radius:0 6px 6px 0; max-height:140px; overflow:hidden;
+      position:relative; transition:max-height 0.3s ease;
+    }
+    .theology-text.expanded { max-height:9999px; }
+    .theology-text:not(.expanded)::after {
+      content:''; position:absolute; bottom:0; left:0; right:0; height:40px;
+      background:linear-gradient(transparent, var(--quote-bg));
+    }
+    .reflection-body {
+      padding:13px 14px; font-family:'Cormorant Garamond',serif;
+      font-size:1.08rem; line-height:1.65; font-style:italic; color:var(--text);
+    }
+    .reflection-body::before { content:'«'; color:var(--accent); }
+    .reflection-body::after  { content:'»'; color:var(--accent); }
+    .humor-card {
+      background:var(--card); border-radius:14px; box-shadow:var(--shadow);
+      overflow:hidden; opacity:0; transform:translateY(10px);
+      animation:fadeUp 0.35s ease forwards; padding:24px 20px; text-align:center;
+    }
+    .humor-emoji { font-size:2.5rem; margin-bottom:12px; }
+    .humor-quote {
+      font-family:'Cormorant Garamond',serif; font-size:1.15rem;
+      font-style:italic; line-height:1.65; color:var(--text);
+    }
+    .humor-quote::before { content:'«'; color:var(--accent); }
+    .humor-quote::after  { content:'»'; color:var(--accent); }
+    .humor-author { margin-top:10px; font-size:0.82rem; font-weight:700; color:var(--muted); }
+    .bottom-actions { padding:4px 12px 8px; display:flex; flex-direction:column; gap:8px; }
+    .bottom-btn {
+      width:100%; padding:13px; border-radius:12px; border:none;
+      font-family:'Nunito',sans-serif; font-size:0.9rem; font-weight:700;
+      cursor:pointer; -webkit-tap-highlight-color:transparent; transition:opacity 0.15s;
+    }
+    .bottom-btn:active { opacity:0.8; }
+    .bottom-btn.primary { background:var(--accent); color:#fff; }
+    .bottom-btn:not(.primary) {
+      background:var(--card); color:var(--accent); border:1.5px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<div id="ptr"><span class="ptr-icon">↓</span><span id="ptr-text">Потяни чтобы обновить</span></div>
+
+<div class="header">
+  <div class="header-left">
+    <h1>📚 Глубже</h1>
+    <p id="header-sub">Загрузка...</p>
+  </div>
+</div>
+
+<div id="app">
+  <div class="skeleton-wrap">
+    <div class="skeleton-card">
+      <div class="skeleton-header"></div>
+      <div class="skeleton-line med"></div>
+      <div class="skeleton-line short last"></div>
+    </div>
+    <div class="skeleton-card">
+      <div class="skeleton-header"></div>
+      <div class="skeleton-line long"></div>
+      <div class="skeleton-line med"></div>
+      <div class="skeleton-line long"></div>
+      <div class="skeleton-line short last"></div>
+    </div>
+    <div class="skeleton-card">
+      <div class="skeleton-header"></div>
+      <div class="skeleton-line long"></div>
+      <div class="skeleton-line med last"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const BACKEND = "https://myradio-rrsk.onrender.com";
+  const CHANNEL = "Chtenie_Preobrazenie";
+
+  const tg = window.Telegram?.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    if (tg.colorScheme === 'dark') document.body.classList.add('dark');
+    tg.onEvent('themeChanged', () => {
+      document.body.classList.toggle('dark', tg.colorScheme === 'dark');
+    });
+    tg.BackButton.onClick(() => tg.close());
+    tg.BackButton.show();
+  }
+
+  let currentPostId = null;
+  let currentData = null;
+  let retryTimer = null;
+  let retryCount = 0;
+  const expandedRefs = new Set(JSON.parse(sessionStorage.getItem('expanded') || '[]'));
+
+  function haptic(type = 'light') { tg?.HapticFeedback?.impactOccurred(type); }
+  function hapticNotif(type = 'success') { tg?.HapticFeedback?.notificationOccurred(type); }
+
+  function getPostId() {
+    const startParam = tg?.initDataUnsafe?.start_param;
+    if (startParam) return startParam;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("post_id") || params.get("start");
+  }
+
+  function openLink(url) {
+    haptic();
+    if (tg?.openLink) tg.openLink(url);
+    else window.open(url, "_blank");
+  }
+
+  function openPostInChannel() {
+    if (!currentPostId) return;
+    haptic();
+    openLink(`https://t.me/${CHANNEL}/${currentPostId}`);
+  }
+
+  function sharePost() {
+    if (!currentPostId) return;
+    haptic('medium');
+    const url = `https://t.me/${CHANNEL}/${currentPostId}`;
+    const txt = encodeURIComponent('Интересный пост из канала «От чтения к Преображению»');
+    if (tg?.openTelegramLink) {
+      tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(url)}&text=${txt}`);
+    } else {
+      window.open(`https://t.me/share/url?url=${encodeURIComponent(url)}`, '_blank');
+    }
+  }
+
+  // Pull to refresh
+  let ptrStartY = 0, ptrDelta = 0;
+  const ptr = document.getElementById('ptr');
+  const ptrText = document.getElementById('ptr-text');
+  document.addEventListener('touchstart', e => {
+    if (window.scrollY === 0) ptrStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!ptrStartY) return;
+    ptrDelta = e.touches[0].clientY - ptrStartY;
+    if (ptrDelta > 0 && window.scrollY === 0) {
+      const pull = Math.min(ptrDelta * 0.5, 60);
+      if (pull > 10) {
+        ptr.classList.add('visible');
+        ptr.classList.toggle('ready', pull > 45);
+        ptrText.textContent = pull > 45 ? 'Отпусти для обновления' : 'Потяни чтобы обновить';
+      }
+    }
+  }, { passive: true });
+  document.addEventListener('touchend', () => {
+    if (ptrDelta > 90) { haptic('medium'); load(true); }
+    ptr.classList.remove('visible', 'ready');
+    ptrStartY = 0; ptrDelta = 0;
+  }, { passive: true });
+
+  function toggleText(btn, id, ref) {
+    haptic();
+    const el = document.getElementById(id);
+    if (!el) return;
+    const expanding = !el.classList.contains('expanded');
+    el.classList.toggle('expanded', expanding);
+    btn.innerHTML = expanding ? '<span>Свернуть</span> ↑' : '<span>Читать полностью</span> ↓';
+    expanding ? expandedRefs.add(ref) : expandedRefs.delete(ref);
+    sessionStorage.setItem('expanded', JSON.stringify([...expandedRefs]));
+  }
+
+  function initExpandBtns() {
+    document.querySelectorAll('.bible-text, .theology-text').forEach(el => {
+      const btn = el.parentElement?.querySelector('.expand-btn');
+      const ref = el.dataset.ref || '';
+      if (expandedRefs.has(ref)) {
+        el.classList.add('expanded');
+        if (btn) btn.innerHTML = '<span>Свернуть</span> ↑';
+      }
+      if (btn && el.scrollHeight <= 155) {
+        btn.classList.add('hidden');
+        el.classList.add('expanded');
+      }
+    });
+  }
+
+  function startRetry(postId) {
+    let seconds = 15;
+    clearInterval(retryTimer);
+    const countdown = document.getElementById('retry-countdown');
+    retryTimer = setInterval(async () => {
+      seconds--;
+      if (countdown) countdown.textContent = seconds;
+      if (seconds <= 0) {
+        clearInterval(retryTimer);
+        retryCount++;
+        if (retryCount < 4) await load();
+      }
+    }, 1000);
+  }
+
+  function verseCount(ref) {
+    const m = ref.match(/(\d+)-(\d+)$/);
+    if (!m) return '';
+    const count = parseInt(m[2]) - parseInt(m[1]) + 1;
+    return count > 1 ? `${count} ст.` : '';
+  }
+
+  async function load(forceRefresh = false) {
+    currentPostId = getPostId();
+    const app = document.getElementById("app");
+    const sub = document.getElementById("header-sub");
+
+    if (!currentPostId) {
+      app.innerHTML = `<div class="state-box">
+        <div class="icon">🔍</div>
+        <p>Открой эту страницу<br>через кнопку «📚 Глубже» в посте канала.</p>
+      </div>`;
+      sub.textContent = "Пост не указан";
+      return;
+    }
+
+    sub.textContent = `Пост #${currentPostId}`;
+
+    try {
+      const r = await fetch(`${BACKEND}/links/${currentPostId}`, {
+        cache: forceRefresh ? 'reload' : 'default'
+      });
+
+      if (r.status === 404) {
+        clearInterval(retryTimer);
+        app.innerHTML = `<div class="state-box">
+          <div class="icon">⏳</div>
+          <p>Материалы готовятся...<br>
+          Обновление через <span class="countdown" id="retry-countdown">15</span> сек.</p>
+          <button class="retry-btn" onclick="load()">Обновить сейчас</button>
+        </div>`;
+        sub.textContent = "Подготовка материалов";
+        startRetry(currentPostId);
+        return;
+      }
+
+      if (!r.ok) throw new Error('server_error');
+      clearInterval(retryTimer);
+      retryCount = 0;
+      currentData = await r.json();
+      if (forceRefresh) hapticNotif('success');
+      render(currentData, currentPostId);
+
+    } catch (e) {
+      if (!currentData) {
+        app.innerHTML = `<div class="state-box">
+          <div class="icon">⚠️</div>
+          <p>Не удалось загрузить данные.<br>Проверь соединение.</p>
+          <button class="retry-btn" onclick="load()">Повторить</button>
+        </div>`;
+        sub.textContent = "Ошибка";
+        hapticNotif('error');
+      }
+    }
+  }
+
+  function render(data, postId) {
+    const sub = document.getElementById("header-sub");
+    sub.textContent = `Пост #${postId}`;
+
+    let html = '<div class="content">';
+
+    if (data.humor) {
+      html += `<div class="humor-card">
+        <div class="humor-emoji">😄</div>
+        <div class="humor-quote">${data.humor_text.replace('«','').replace('»','')}</div>
+        <div class="humor-author">— ${data.humor_author}</div>
+      </div>`;
+      html += `<div class="bottom-actions">
+        <button class="bottom-btn primary" onclick="openPostInChannel()">↗ Открыть пост в канале</button>
+        <button class="bottom-btn" onclick="sharePost()">⬆ Поделиться</button>
+      </div></div>`;
+      document.getElementById("app").innerHTML = html;
+      return;
+    }
+
+    if (data.topics?.length) {
+      html += `<div class="card">
+        <div class="card-header"><span>🏷️</span><h2>Темы</h2></div>
+        <div class="topics">${data.topics.map(t => `<span class="topic-chip">${t}</span>`).join("")}</div>
+      </div>`;
+    }
+
+    if (data.related_posts?.length) {
+      const items = data.related_posts.map((id, i) => `
+        <div class="related-item" onclick="haptic();openLink('https://t.me/${CHANNEL}/${id}')">
+          <div class="related-num">${i + 1}</div>
+          <div>
+            <div class="related-title">Пост #${id}</div>
+            <div class="related-sub">Похожая тема в канале</div>
+          </div>
+          <span class="related-arrow">›</span>
+        </div>`).join("");
+      html += `<div class="card">
+        <div class="card-header"><span>🔗</span><h2>Связанные посты</h2></div>
+        ${items}
+      </div>`;
+    }
+
+    if (data.bible_refs?.length) {
+      const roleLabels = { "автора": "✍️ Текст автора", "дополнительно": "📖 Дополнительно" };
+      const items = data.bible_refs.map((b, i) => {
+        const roleLabel = b.role ? (roleLabels[b.role] || "") : "";
+        const translations = b.translations || {};
+        const safeId = `bt${i}_${(b.ref||'').replace(/[^a-z0-9]/gi, '')}`;
+        const refStr = b.ref || '';
+        const vc = verseCount(refStr);
+        const btns = Object.entries(translations).map(([name, url]) =>
+          `<button class="trans-btn" onclick="openLink('${url}')">${name}</button>`
+        ).join("");
+        return `
+        <div class="bible-item">
+          ${roleLabel ? `<div class="bible-role">${roleLabel}</div>` : ""}
+          <div class="bible-ref-row">
+            <span class="bible-ref">${refStr}</span>
+            ${vc ? `<span class="bible-verse-count"> · ${vc}</span>` : ""}
+          </div>
+          <div class="bible-theme">${b.theme || ""}</div>
+          ${b.text_syn ? `
+            <div class="bible-text-wrap">
+              <div class="bible-text" id="${safeId}" data-ref="${refStr}">${b.text_syn}</div>
+              <button class="expand-btn" onclick="toggleText(this,'${safeId}','${refStr}')">
+                <span>Читать полностью</span> ↓
+              </button>
+            </div>` : ""}
+          ${btns ? `<div class="trans-links">${btns}</div>` : ""}
+        </div>`;
+      }).join("");
+      html += `<div class="card">
+        <div class="card-header"><span>📖</span><h2>Библейские отрывки</h2></div>
+        ${items}
+      </div>`;
+    }
+
+    if (data.quotes?.length) {
+      const items = data.quotes.map((q, i) => {
+        const safeId = `tq${i}`;
+        return `
+        <div class="theology-item">
+          <div class="theology-author">${q.author}</div>
+          <div class="theology-title">${q.title || ""}</div>
+          <div class="theology-text" id="${safeId}">${q.text}</div>
+          <button class="expand-btn" onclick="toggleText(this,'${safeId}','tq_${i}')">
+            <span>Читать полностью</span> ↓
+          </button>
+        </div>`;
+      }).join("");
+      html += `<div class="card">
+        <div class="card-header"><span>💬</span><h2>Богословы о теме</h2></div>
+        ${items}
+      </div>`;
+    }
+
+    if (data.reflection) {
+      html += `<div class="card">
+        <div class="card-header"><span>🙏</span><h2>Вопрос для размышления</h2></div>
+        <div class="reflection-body">${data.reflection}</div>
+      </div>`;
+    }
+
+    html += `<div class="bottom-actions">
+      <button class="bottom-btn primary" onclick="openPostInChannel()">↗ Открыть пост в канале</button>
+      <button class="bottom-btn" onclick="sharePost()">⬆ Поделиться</button>
+    </div>`;
+
+    html += '</div>';
+    const savedScroll = sessionStorage.getItem(`scroll_${postId}`);
+    document.getElementById("app").innerHTML = html;
+    setTimeout(() => {
+      initExpandBtns();
+      if (savedScroll) window.scrollTo(0, parseInt(savedScroll));
+    }, 50);
+    window.addEventListener('scroll', () => {
+      sessionStorage.setItem(`scroll_${postId}`, window.scrollY);
+    }, { passive: true });
+  }
+
+  load();
+</script>
+</body>
+</html>
