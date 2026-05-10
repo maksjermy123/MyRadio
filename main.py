@@ -10,11 +10,15 @@ import ipaddress
 import time
 import base64
 import asyncio
+import math
 import logging
+import random
+from collections import defaultdict
 from datetime import datetime, timezone
 from urllib.parse import unquote, parse_qsl
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import httpx
 
@@ -35,14 +39,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Конфигурация ──────────────────────────────────────────────
 BOT_TOKEN                 = os.environ.get("BOT_TOKEN", "")
 CHANNEL_ID                = os.environ.get("CHANNEL_ID", "@Chtenie_Preobrazenie")
 INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
 GITHUB_TOKEN              = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO               = os.environ.get("GITHUB_REPO", "maksjermy123/MyRadio")
-GITHUB_FILE               = os.environ.get("GITHUB_FILE", "posts.json")
 GITHUB_BRANCH             = os.environ.get("GITHUB_BRANCH", "main")
+GITHUB_FILE               = os.environ.get("GITHUB_FILE", "posts.json")
+GITHUB_LINKS_FILE         = os.environ.get("GITHUB_LINKS_FILE", "links.json")
+GROQ_API_KEY              = os.environ.get("GROQ_API_KEY", "")
+COHERE_API_KEY            = os.environ.get("COHERE_API_KEY", "")
+BOT_USERNAME              = os.environ.get("BOT_USERNAME", "preoradio_bot")
+DEEPER_PAGE_URL           = f"https://maksjermy123.github.io/MyRadio/deeper.html"
 
+TELEGRAM_API  = f"https://api.telegram.org/bot{BOT_TOKEN}"
+GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
+COHERE_API    = "https://api.cohere.com/v2/embed"
+COHERE_RERANK = "https://api.cohere.com/v2/rerank"
+
+def _groq_headers():
+    return {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+
+def _cohere_headers():
+    return {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
+
+# ── Хэштеги ───────────────────────────────────────────────────
 HASHTAG_MAP = {
     "#библия":          "📖 Библия и толкование",
     "#богословие":      "✝️ Богословие",
@@ -71,18 +93,221 @@ HASHTAG_MAP = {
     "#анонс":           "📻 Анонсы канала",
     "#новости":         "📻 Анонсы канала",
 }
-IGNORE_TAGS = {"#отчтениякпреображению"}
+IGNORE_TAGS  = {"#отчтениякпреображению"}
+SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука"}
+
+# ── Карта книг Библии ─────────────────────────────────────────
+BOOK_NUM = {
+    "Бытие": 1, "Исход": 2, "Левит": 3, "Числа": 4, "Второзаконие": 5,
+    "Иисус Навин": 6, "Судьи": 7, "Руфь": 8,
+    "1 Царств": 9, "2 Царств": 10, "3 Царств": 11, "4 Царств": 12,
+    "1 Паралипоменон": 13, "2 Паралипоменон": 14,
+    "Ездра": 15, "Неемия": 16, "Есфирь": 17, "Иов": 18,
+    "Псалтирь": 19, "Псалом": 19, "Притчи": 20,
+    "Екклесиаст": 21, "Песня Песней": 22,
+    "Исаия": 23, "Иеремия": 24, "Плач Иеремии": 25,
+    "Иезекииль": 26, "Даниил": 27, "Осия": 28, "Иоиль": 29,
+    "Амос": 30, "Авдий": 31, "Иона": 32, "Михей": 33,
+    "Наум": 34, "Аввакум": 35, "Софония": 36, "Аггей": 37,
+    "Захария": 38, "Малахия": 39,
+    "Матфей": 40, "Марк": 41, "Лука": 42, "Иоанн": 43, "Деяния": 44,
+    "Иакова": 45,
+    "1 Петра": 46, "2 Петра": 47,
+    "1 Иоанна": 48, "2 Иоанна": 49, "3 Иоанна": 50,
+    "Иуды": 51,
+    "Римлянам": 52,
+    "1 Коринфянам": 53, "2 Коринфянам": 54,
+    "Галатам": 55, "Ефесянам": 56, "Филиппийцам": 57, "Колоссянам": 58,
+    "1 Фессалоникийцам": 59, "2 Фессалоникийцам": 60,
+    "1 Тимофею": 61, "2 Тимофею": 62, "Титу": 63, "Филимону": 64,
+    "Евреям": 65, "Откровение": 66,
+}
+
+BOOK_JSON_INDEX = {
+    "Бытие": 0, "Исход": 1, "Левит": 2, "Числа": 3, "Второзаконие": 4,
+    "Иисус Навин": 5, "Судьи": 6, "Руфь": 7,
+    "1 Царств": 8, "2 Царств": 9, "3 Царств": 10, "4 Царств": 11,
+    "1 Паралипоменон": 12, "2 Паралипоменон": 13,
+    "Ездра": 14, "Неемия": 15, "Есфирь": 16, "Иов": 17,
+    "Псалтирь": 18, "Псалом": 18, "Притчи": 19,
+    "Екклесиаст": 20, "Песня Песней": 21,
+    "Исаия": 22, "Иеремия": 23, "Плач Иеремии": 24,
+    "Иезекииль": 25, "Даниил": 26, "Осия": 27, "Иоиль": 28,
+    "Амос": 29, "Авдий": 30, "Иона": 31, "Михей": 32,
+    "Наум": 33, "Аввакум": 34, "Софония": 35, "Аггей": 36,
+    "Захария": 37, "Малахия": 38,
+    "Матфей": 39, "Марк": 40, "Лука": 41, "Иоанн": 42, "Деяния": 43,
+    "Иакова": 44,
+    "1 Петра": 45, "2 Петра": 46,
+    "1 Иоанна": 47, "2 Иоанна": 48, "3 Иоанна": 49,
+    "Иуды": 50,
+    "Римлянам": 51,
+    "1 Коринфянам": 52, "2 Коринфянам": 53,
+    "Галатам": 54, "Ефесянам": 55, "Филиппийцам": 56, "Колоссянам": 57,
+    "1 Фессалоникийцам": 58, "2 Фессалоникийцам": 59,
+    "1 Тимофею": 60, "2 Тимофею": 61, "Титу": 62, "Филимону": 63,
+    "Евреям": 64, "Откровение": 65,
+}
+
+BOOK_ALIASES = {
+    "Евангелие от Матфея": "Матфей", "Евангелие от Марка": "Марк",
+    "Евангелие от Луки": "Лука", "Евангелие от Иоанна": "Иоанн",
+    "Деяния апостолов": "Деяния", "Деяния Апостолов": "Деяния",
+    "Послание к Римлянам": "Римлянам", "Послание Иакова": "Иакова",
+    "1-е Коринфянам": "1 Коринфянам", "2-е Коринфянам": "2 Коринфянам",
+    "1-е Петра": "1 Петра", "2-е Петра": "2 Петра",
+    "1-е Иоанна": "1 Иоанна", "2-е Иоанна": "2 Иоанна",
+    "1-е Тимофею": "1 Тимофею", "2-е Тимофею": "2 Тимофею",
+    "1-е Фессалоникийцам": "1 Фессалоникийцам",
+    "2-е Фессалоникийцам": "2 Фессалоникийцам",
+    "Откровение Иоанна": "Откровение", "Апокалипсис": "Откровение",
+    "Быт": "Бытие", "Исх": "Исход", "Лев": "Левит",
+    "Чис": "Числа", "Втор": "Второзаконие",
+    "Нав": "Иисус Навин", "Суд": "Судьи",
+    "1Цар": "1 Царств", "2Цар": "2 Царств",
+    "3Цар": "3 Царств", "4Цар": "4 Царств",
+    "1Пар": "1 Паралипоменон", "2Пар": "2 Паралипоменон",
+    "Езд": "Ездра", "Неем": "Неемия", "Есф": "Есфирь",
+    "Пс": "Псалтирь", "Пс.": "Псалтирь", "Псалом": "Псалтирь",
+    "Притч": "Притчи", "Прит": "Притчи",
+    "Еккл": "Екклесиаст", "Песн": "Песня Песней",
+    "Ис": "Исаия", "Иер": "Иеремия", "Плач": "Плач Иеремии",
+    "Иез": "Иезекииль", "Дан": "Даниил",
+    "Ос": "Осия", "Иоил": "Иоиль", "Ам": "Амос",
+    "Авд": "Авдий", "Иона": "Иона", "Мих": "Михей",
+    "Наум": "Наум", "Авв": "Аввакум", "Соф": "Софония",
+    "Агг": "Аггей", "Зах": "Захария", "Мал": "Малахия",
+    "Мф": "Матфей", "Мк": "Марк", "Лк": "Лука",
+    "Ин": "Иоанн", "Ин.": "Иоанн",
+    "Деян": "Деяния",
+    "Рим": "Римлянам",
+    "1Кор": "1 Коринфянам", "2Кор": "2 Коринфянам",
+    "Гал": "Галатам", "Еф": "Ефесянам", "Флп": "Филиппийцам",
+    "Кол": "Колоссянам",
+    "1Фес": "1 Фессалоникийцам", "2Фес": "2 Фессалоникийцам",
+    "1Тим": "1 Тимофею", "2Тим": "2 Тимофею",
+    "Тит": "Титу", "Флм": "Филимону",
+    "Евр": "Евреям", "Иак": "Иакова",
+    "1Пет": "1 Петра", "2Пет": "2 Петра",
+    "1Ин": "1 Иоанна", "2Ин": "2 Иоанна", "3Ин": "3 Иоанна",
+    "Иуд": "Иуды", "Откр": "Откровение",
+    "Иоанна": "Иоанн", "Матфея": "Матфей",
+    "Марка": "Марк", "Луки": "Лука", "Иуды": "Иуды",
+    "Послание к Ефесянам": "Ефесянам",
+    "Послание к Галатам": "Галатам",
+    "Послание к Евреям": "Евреям",
+    "Послание к Колоссянам": "Колоссянам",
+    "Послание к Филиппийцам": "Филиппийцам",
+    "1-е послание к Коринфянам": "1 Коринфянам",
+    "2-е послание к Коринфянам": "2 Коринфянам",
+    "1-е послание к Фессалоникийцам": "1 Фессалоникийцам",
+    "2-е послание к Фессалоникийцам": "2 Фессалоникийцам",
+    "1-е послание к Тимофею": "1 Тимофею",
+    "2-е послание к Тимофею": "2 Тимофею",
+    "1-е послание Петра": "1 Петра", "2-е послание Петра": "2 Петра",
+    "1-е послание Иоанна": "1 Иоанна",
+}
+
+# ── AI Промпты ────────────────────────────────────────────────
+GROQ_PROMPT = """
+Ты — вдумчивый богослов и библеист с глубоким знанием Священного Писания.
+Ты внимательно читаешь текст христианского поста и помогаешь читателю
+войти глубже в ту же мысль через Слово Божье.
+
+━━━ ТЕКСТ ПОСТА ━━━
+{post_text}
+
+━━━ ТВОЙ ПРОЦЕСС ━━━
+
+ШАГ 1 — ПОЙМИ АВТОРА
+Прочитай пост целиком. Определи:
+- Главную богословскую мысль которую развивает автор
+- Духовный опыт или вопрос стоящий за текстом
+- Интонацию: размышление, исповедь, учение, утешение, призыв
+
+ШАГ 2 — ТЕКСТЫ АВТОРА (role="автора")
+Найди все тексты Писания которые автор явно цитирует или на которые опирается.
+Они идут ПЕРВЫМИ. Если автор не дал точную ссылку — найди сам по содержанию.
+Если автор не использует никаких текстов Писания — этот раздел пуст.
+
+ШАГ 3 — ДОПОЛНИТЕЛЬНЫЕ ТЕКСТЫ (role="дополнительно")
+Добавь 2-3 отрывка которые углубляют именно мысль автора:
+- Один из другой части канона (ВЗ если автор в НЗ, и наоборот)
+- Один христологический — как мысль раскрывается через Христа
+- Один практический — что делать с этим знанием
+
+СТРОГО ЗАПРЕЩЕНО:
+- Подбирать стихи по ключевым словам или тегам — только по смыслу поста
+- Брать стихи вырванные из контекста
+- Использовать второканонические книги (Товит, Маккавеи, Премудрость и др.)
+- Выдумывать или искажать ссылки — только реально существующие стихи
+- Давать более 5 отрывков итого
+
+Предпочитай отрывки (3-7 стихов) а не одиночные стихи.
+
+ШАГ 5 — ВОПРОС ДЛЯ РАЗМЫШЛЕНИЯ
+Сформулируй вопрос как продолжение мысли автора —
+как будто ты его собеседник который прочитал пост и задаёт следующий вопрос.
+Конкретный, личный, вытекающий из прочитанного — не общий по теме.
+
+━━━ ОТВЕТ ━━━
+
+Только валидный JSON, без markdown, без пояснений вне JSON:
+{{
+  "bible_refs": [
+    {{
+      "ref": "Книга глава:стих — формат: 'Бытие 3:15' или 'Римлянам 8:18-25'. Никогда не пиши просто главу без стиха. Название в именительном падеже: Иоанн, Матфей, Лука, Римлянам, Псалтирь, 1 Коринфянам.",
+      "theme": "одно предложение — почему этот текст в контексте мысли автора",
+      "role": "автора или дополнительно"
+    }}
+  ],
+  "reflection": "Личный вопрос продолжающий мысль автора"
+}}
+"""
 
 _github_lock = asyncio.Lock()
 
 
-# ── Парсинг ───────────────────────────────────────────────────────
+# ── GitHub API ────────────────────────────────────────────────
+def _gh_headers() -> dict:
+    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
+
+async def github_get(client: httpx.AsyncClient, filename: str):
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
+    r = await client.get(url, headers=_gh_headers(), params={"ref": GITHUB_BRANCH})
+    if r.status_code == 404:
+        return None, None
+    r.raise_for_status()
+    data = r.json()
+    content = json.loads(base64.b64decode(data["content"]).decode())
+    return content, data["sha"]
+
+
+async def github_put(client: httpx.AsyncClient, filename: str, content: dict, sha, message: str):
+    encoded = base64.b64encode(
+        json.dumps(content, ensure_ascii=False, indent=2).encode()
+    ).decode()
+    body = {"message": message, "content": encoded, "branch": GITHUB_BRANCH}
+    if sha:
+        body["sha"] = sha
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
+    for attempt in range(3):
+        r = await client.put(url, headers=_gh_headers(), json=body)
+        if r.status_code in (200, 201):
+            return r.json()
+        if r.status_code == 409 and attempt < 2:
+            _, new_sha = await github_get(client, filename)
+            if new_sha:
+                body["sha"] = new_sha
+            await asyncio.sleep(1)
+            continue
+        r.raise_for_status()
+
+
+# ── Парсинг хэштегов ─────────────────────────────────────────
 def extract_hashtags(message: dict) -> list:
-    """
-    Telegram передаёт offset/length в UTF-16 единицах.
-    Эмодзи (💔, 🌿 и др.) занимают 2 единицы — поэтому нужен UTF-16 срез.
-    """
+    """Парсинг хэштегов с учётом UTF-16 (эмодзи = 2 единицы)."""
     tags = []
     for field in ("entities", "caption_entities"):
         entities = message.get(field) or []
@@ -122,40 +347,7 @@ def extract_title_and_preview(message: dict) -> tuple:
     return lines[0][:120], (" ".join(lines[:4])[:300] if len(lines) > 1 else "")
 
 
-# ── GitHub API ────────────────────────────────────────────────────
-
-def _gh_headers() -> dict:
-    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-
-
-async def fetch_posts_json(client: httpx.AsyncClient) -> tuple:
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-    resp = await client.get(url, headers=_gh_headers(), params={"ref": GITHUB_BRANCH})
-    if resp.status_code == 200:
-        data = resp.json()
-        return json.loads(base64.b64decode(data["content"]).decode()), data["sha"]
-    if resp.status_code == 404:
-        return {"posts": [], "topics": [], "total": 0,
-                "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d")}, None
-    raise Exception(f"GitHub {resp.status_code}: {resp.text[:200]}")
-
-
-async def push_posts_json(client: httpx.AsyncClient, data: dict, sha) -> bool:
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-    b64 = base64.b64encode(json.dumps(data, ensure_ascii=False, indent=2).encode()).decode()
-    payload = {
-        "message": f"auto: posts [{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}]",
-        "content": b64,
-        "branch": GITHUB_BRANCH,
-    }
-    if sha:
-        payload["sha"] = sha
-    resp = await client.put(url, headers=_gh_headers(), json=payload)
-    return resp.status_code in (200, 201)
-
-
 def recalc_topics(posts: list) -> list:
-    """Пересчитывает категории. Каждый пост считается один раз даже с несколькими тегами."""
     counts = {}
     for p in posts:
         for t in p.get("topics", []):
@@ -163,13 +355,389 @@ def recalc_topics(posts: list) -> list:
     return [{"name": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
 
 
-# ── Добавление нового поста ───────────────────────────────────────
+def should_process_ai(tags: list) -> bool:
+    """Нужно ли запускать AI для этого набора тегов."""
+    non_skip = [t for t in tags if t not in SKIP_AI_TAGS and t not in IGNORE_TAGS]
+    return bool(non_skip)
 
+
+# ── Парсинг библейских ссылок ─────────────────────────────────
+def normalize_book(name: str) -> str:
+    return BOOK_ALIASES.get(name, name)
+
+
+def parse_ref(ref: str):
+    """Разбираем ref на (book_num, chapter, verse_start) или None."""
+    try:
+        ref = ref.strip()
+        ref = re.split(r' [—–-]{1,2} ', ref)[0].strip()
+        m = re.search(r'(\d+:\d+(?:-\d+)?)$', ref)
+        if m:
+            cv = m.group(1)
+            book_ru = normalize_book(ref[:m.start()].strip())
+            book_num = BOOK_NUM.get(book_ru)
+            if not book_num:
+                return None
+            chapter, verse_part = cv.split(":", 1)
+            verse_start = verse_part.split("-")[0]
+            return book_num, int(chapter), int(verse_start)
+        m2 = re.search(r'(\d+)$', ref)
+        if m2:
+            chapter = m2.group(1)
+            book_ru = normalize_book(ref[:m2.start()].strip())
+            book_num = BOOK_NUM.get(book_ru)
+            if book_num:
+                return book_num, int(chapter), 1
+    except Exception:
+        pass
+    return None
+
+
+def make_translation_links(ref: str) -> dict:
+    parsed = parse_ref(ref)
+    if not parsed:
+        return {}
+    book_num, chapter, verse = parsed
+    return {"📖 Читать все переводы": f"https://bible.by/verse/{book_num}/{chapter}/{verse}/"}
+
+
+# ── Embeddings (Cohere) ───────────────────────────────────────
+def cosine_similarity(a: list, b: list) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def get_embedding(text: str):
+    if not COHERE_API_KEY:
+        return None
+    try:
+        payload = {
+            "texts": [text[:2000]],
+            "model": "embed-multilingual-v3.0",
+            "input_type": "search_document",
+            "embedding_types": ["float"],
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(COHERE_API, headers=_cohere_headers(), json=payload)
+            r.raise_for_status()
+            return r.json()["embeddings"]["float"][0]
+    except Exception as e:
+        log.error(f"Embedding error: {e}")
+        return None
+
+
+async def find_related_by_embedding(post_id: int, embedding: list, posts_data: dict, top_k: int = 2) -> list:
+    scores = []
+    for post in posts_data.get("posts", []):
+        if post["id"] == post_id:
+            continue
+        emb = post.get("embedding")
+        if not emb:
+            continue
+        sim = cosine_similarity(embedding, emb)
+        scores.append((post["id"], sim))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    result = [pid for pid, score in scores[:top_k] if score > 0.3]
+    log.info(f"Vector search for {post_id}: top={[(pid, round(s,3)) for pid,s in scores[:3]]}")
+    return result
+
+
+async def update_related_bidirectional(post_id: int, related_ids: list, links_data: dict) -> None:
+    for rel_id in related_ids:
+        rel_key = str(rel_id)
+        if rel_key not in links_data:
+            continue
+        current = links_data[rel_key].get("related_posts", [])
+        if post_id not in current:
+            links_data[rel_key]["related_posts"] = ([post_id] + current)[:2]
+
+
+# ── Богословская база ─────────────────────────────────────────
+_theology_cache = None
+
+
+async def get_theology_db() -> list:
+    global _theology_cache
+    if _theology_cache is not None:
+        return _theology_cache
+    all_records = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for part in range(1, 4):
+            url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/theology_db_{part}.json"
+            try:
+                r = await client.get(url)
+                if r.status_code == 200:
+                    records = r.json()
+                    all_records.extend(records)
+                    log.info(f"Theology DB part {part}: {len(records)} записей")
+            except Exception as e:
+                log.error(f"Theology DB part {part} error: {e}")
+    _theology_cache = all_records
+    log.info(f"Theology DB loaded: {len(all_records)} записей")
+    return all_records
+
+
+async def find_theology_quotes(post_text: str, top_n: int = 3) -> list:
+    if not COHERE_API_KEY:
+        return []
+    try:
+        db = await get_theology_db()
+        if not db:
+            return []
+        by_author = defaultdict(list)
+        for rec in db:
+            by_author[rec["author"]].append(rec)
+        sample = []
+        per_author = min(400, 2000 // max(len(by_author), 1))
+        for author, recs in by_author.items():
+            selected = random.sample(recs, min(per_author, len(recs)))
+            sample.extend(selected)
+        random.shuffle(sample)
+        sample = sample[:2000]
+        documents = [rec["text"][:400] for rec in sample]
+        payload = {
+            "model": "rerank-multilingual-v3.0",
+            "query": post_text[:1000],
+            "documents": documents,
+            "top_n": top_n,
+            "return_documents": True,
+        }
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(COHERE_RERANK, headers=_cohere_headers(), json=payload)
+            r.raise_for_status()
+            results = r.json().get("results", [])
+        if not results:
+            return []
+        top_score = results[0]["relevance_score"]
+        if top_score < 0.12:
+            return []
+        threshold = max(0.08, top_score * 0.35)
+        quotes = []
+        for res in results:
+            score = res["relevance_score"]
+            if score < threshold:
+                break
+            rec = sample[res["index"]]
+            quotes.append({
+                "author": rec["author"],
+                "title": rec.get("title", ""),
+                "text": rec["text"][:500],
+                "score": round(score, 3)
+            })
+        log.info(f"Theology: {len(quotes)} quotes, top={top_score:.3f}")
+        return quotes
+    except Exception as e:
+        log.error(f"Theology search error: {e}")
+        return []
+
+
+# ── Синодальный перевод ───────────────────────────────────────
+_bible_cache = None
+
+
+async def get_bible_db(client: httpx.AsyncClient):
+    global _bible_cache
+    if _bible_cache is not None:
+        return _bible_cache
+    try:
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/ru_synodal.json"
+        r = await client.get(url, timeout=30)
+        if r.status_code == 200:
+            _bible_cache = r.json()
+            log.info(f"Bible DB loaded: {len(_bible_cache)} books")
+            return _bible_cache
+    except Exception as e:
+        log.error(f"Bible DB load error: {e}")
+    return None
+
+
+async def fetch_bible_text(ref: str) -> str:
+    try:
+        ref = re.split(r' [—–-]{1,2} ', ref.strip())[0].strip()
+        m = re.search(r'(\d+:\d+(?:-\d+)?)$', ref)
+        if not m:
+            m2 = re.search(r'(\d+)$', ref)
+            if not m2:
+                return ""
+            chapter = int(m2.group(1)) - 1
+            book_ru = normalize_book(ref[:m2.start()].strip())
+            book_idx = BOOK_JSON_INDEX.get(book_ru)
+            if book_idx is None:
+                return ""
+            async with httpx.AsyncClient(timeout=15) as client:
+                bible = await get_bible_db(client)
+            if not bible or chapter >= len(bible[book_idx]["chapters"]):
+                return ""
+            verses = bible[book_idx]["chapters"][chapter][:5]
+            return " ".join(f"{i+1} {v}" for i, v in enumerate(verses))
+        cv = m.group(1)
+        book_ru = normalize_book(ref[:m.start()].strip())
+        book_idx = BOOK_JSON_INDEX.get(book_ru)
+        if book_idx is None:
+            return ""
+        chapter_str, verse_str = cv.split(":", 1)
+        chapter = int(chapter_str) - 1
+        if "-" in verse_str:
+            v_start, v_end = verse_str.split("-", 1)
+            verse_start = int(v_start) - 1
+            verse_end = int(v_end)
+        else:
+            verse_start = int(verse_str) - 1
+            verse_end = verse_start + 1
+        async with httpx.AsyncClient(timeout=15) as client:
+            bible = await get_bible_db(client)
+        if not bible:
+            return ""
+        chapters = bible[book_idx].get("chapters", [])
+        if chapter >= len(chapters):
+            return ""
+        selected = chapters[chapter][verse_start:verse_end]
+        if not selected:
+            return ""
+        return " ".join(f"{verse_start + 1 + i} {v}" for i, v in enumerate(selected))
+    except Exception as e:
+        log.error(f"Bible fetch error for '{ref}': {e}")
+
+
+# ── Groq: анализ поста ────────────────────────────────────────
+async def analyze_post(post_text: str, topics: list):
+    prompt = GROQ_PROMPT.format(post_text=post_text)
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"]
+        text = text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        return json.loads(text)
+
+
+# ── Кнопка «Глубже» ───────────────────────────────────────────
+async def send_deeper_button(post_id: int):
+    deeper_url = f"{DEEPER_PAGE_URL}?post_id={post_id}"
+    keyboard = {"inline_keyboard": [[{"text": "📚 Глубже", "web_app": {"url": deeper_url}}]]}
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{TELEGRAM_API}/editMessageReplyMarkup",
+            json={"chat_id": CHANNEL_ID, "message_id": post_id, "reply_markup": keyboard}
+        )
+        result = r.json()
+        if result.get("ok"):
+            log.info(f"✅ Кнопка «Глубже» добавлена к посту {post_id}")
+            return
+        log.warning(f"edit failed: {result.get('description')} — пробуем sendMessage")
+        r2 = await client.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={
+                "chat_id": CHANNEL_ID,
+                "text": "📚 Библейский контекст и связи этого поста",
+                "reply_to_message_id": post_id,
+                "reply_markup": keyboard
+            }
+        )
+        if r2.json().get("ok"):
+            log.info(f"✅ Кнопка отправлена отдельным сообщением к {post_id}")
+        else:
+            log.error(f"❌ Ошибка кнопки для {post_id}: {r2.json().get('description')}")
+
+
+# ── Обработка поста AI ────────────────────────────────────────
+async def process_post(post: dict):
+    """Полный AI-пайплайн: embedding → Groq → Cohere Rerank → Bible text → links.json."""
+    post_id = post.get("message_id") or post.get("id")
+    text = post.get("text", "") or post.get("caption", "")
+    if not text or not post_id:
+        return
+
+    tags = extract_hashtags(post) if ("entities" in post or "caption_entities" in post) else []
+    topics = hashtags_to_topics(tags) if tags else post.get("topics", [])
+    if not topics:
+        log.info(f"process_post {post_id}: нет тем — пропускаем")
+        return
+
+    # Юмор: без Groq/Cohere
+    if "😄 Юмор" in topics:
+        humor_result = {
+            "post_id": post_id, "topics": topics,
+            "related_posts": [], "bible_refs": [], "quotes": [],
+            "reflection": "", "humor": True,
+            "humor_text": "«Серьёзность человека, обладающего чувством юмора, намного серьёзнее серьёзности серьёзного человека»",
+            "humor_author": "А. П. Чехов"
+        }
+        async with _github_lock:
+            async with httpx.AsyncClient(timeout=20) as client:
+                links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
+                if links_data is None:
+                    links_data = {}
+                links_data[str(post_id)] = humor_result
+                await github_put(client, GITHUB_LINKS_FILE, links_data, links_sha, f"Humor post {post_id}")
+        await send_deeper_button(post_id)
+        log.info(f"😄 Humor post {post_id} saved.")
+        return
+
+    # Нормальный пост
+    embedding = None
+    async with _github_lock:
+        async with httpx.AsyncClient(timeout=20) as client:
+            posts_data, posts_sha = await github_get(client, GITHUB_FILE)
+            if posts_data is None:
+                posts_data = {"posts": [], "topics": [], "total": 0, "updated": ""}
+            existing = next((p for p in posts_data["posts"] if p["id"] == post_id), None)
+            embedding = existing.get("embedding") if existing else None
+            if not embedding:
+                embedding = await get_embedding(text)
+                if existing and embedding:
+                    existing["embedding"] = embedding
+                    await github_put(client, GITHUB_FILE, posts_data, posts_sha,
+                                     f"embedding for post {post_id}")
+
+    try:
+        related_task = (find_related_by_embedding(post_id, embedding, posts_data)
+                        if embedding else asyncio.sleep(0))
+        result, related, theology_quotes = await asyncio.gather(
+            analyze_post(text, topics), related_task, find_theology_quotes(text)
+        )
+        if not embedding:
+            related = []
+    except Exception as e:
+        log.error(f"AI error for post {post_id}: {e}")
+        return
+
+    result["post_id"] = post_id
+    result["topics"] = topics
+    result["quotes"] = theology_quotes
+    result["related_posts"] = related if related else []
+    result["humor"] = False
+
+    for bible_ref in result.get("bible_refs", []):
+        ref_str = bible_ref.get("ref", "")
+        bible_ref["text_syn"] = await fetch_bible_text(ref_str)
+        bible_ref["translations"] = make_translation_links(ref_str)
+
+    async with _github_lock:
+        async with httpx.AsyncClient(timeout=20) as client:
+            links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
+            if links_data is None:
+                links_data = {}
+            links_data[str(post_id)] = result
+            if result["related_posts"]:
+                await update_related_bidirectional(post_id, result["related_posts"], links_data)
+            await github_put(client, GITHUB_LINKS_FILE, links_data, links_sha,
+                             f"links for post {post_id}")
+
+    log.info(f"✅ Post {post_id} processed. Related: {result['related_posts']}")
+    await send_deeper_button(post_id)
+
+
+# ── posts.json: добавление/обновление ────────────────────────
 async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
-    """
-    Добавляет новый пост или обновляет существующий (при редактировании).
-    Защита от race condition через asyncio.Lock + 3 попытки при конфликте sha.
-    """
     if not GITHUB_TOKEN:
         log.error("GITHUB_TOKEN не задан")
         return "error_no_github_token"
@@ -184,22 +752,24 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
         return "no_topics"
 
     title, preview = extract_title_and_preview(message)
-    date_raw = message.get("date", 0)
-    date_str = datetime.fromtimestamp(date_raw, tz=timezone.utc).strftime("%Y-%m-%d")
+    text_full  = (message.get("text", "") or message.get("caption", "") or "")[:3000]
+    date_raw   = message.get("date", 0)
+    date_str   = datetime.fromtimestamp(date_raw, tz=timezone.utc).strftime("%Y-%m-%d")
+    chan_user   = (message.get("chat") or {}).get("username") or CHANNEL_ID.lstrip("@")
     new_post = {
-        "id":      msg_id,
-        "date":    date_str,
-        "title":   title,
-        "preview": preview,
-        "url":     f"https://t.me/{(message.get('chat') or {}).get('username', None) or CHANNEL_ID.lstrip('@')}/{msg_id}",
-        "topics":  topics,
+        "id": msg_id, "date": date_str, "title": title,
+        "preview": preview, "url": f"https://t.me/{chan_user}/{msg_id}",
+        "topics": topics, "text": text_full,
     }
 
     async with _github_lock:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             for attempt in range(3):
                 try:
-                    posts_data, sha = await fetch_posts_json(client)
+                    posts_data, sha = await github_get(client, GITHUB_FILE)
+                    if posts_data is None:
+                        posts_data = {"posts": [], "topics": [], "total": 0,
+                                      "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
                 except Exception as e:
                     log.error(f"Чтение GitHub (попытка {attempt+1}): {e}")
                     await asyncio.sleep(1)
@@ -210,7 +780,9 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
 
                 if msg_id in existing_ids:
                     if is_edit:
-                        # Обновляем существующий пост
+                        old = next((p for p in posts if p["id"] == msg_id), {})
+                        if old.get("embedding"):
+                            new_post["embedding"] = old["embedding"]
                         posts_data["posts"] = [new_post if p["id"] == msg_id else p for p in posts]
                         action = "updated"
                     else:
@@ -220,28 +792,25 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
                     posts_data["posts"].append(new_post)
                     action = "added"
 
-                # Сортировка: новые сверху (по убыванию id)
                 posts_data["posts"].sort(key=lambda p: p["id"], reverse=True)
                 posts_data["topics"]  = recalc_topics(posts_data["posts"])
                 posts_data["total"]   = len(posts_data["posts"])
                 posts_data["updated"] = date_str
 
                 try:
-                    if await push_posts_json(client, posts_data, sha):
-                        log.info(f"Пост {msg_id} — {action} ✓")
-                        return action
-                    log.warning(f"Конфликт sha, попытка {attempt+1}/3")
-                    await asyncio.sleep(0.5)
+                    await github_put(client, GITHUB_FILE, posts_data, sha,
+                                     f"auto: posts [{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}]")
+                    log.info(f"Пост {msg_id} — {action} ✓")
+                    return action
                 except Exception as e:
                     log.error(f"Запись GitHub (попытка {attempt+1}): {e}")
                     await asyncio.sleep(1)
 
-    log.error(f"Пост {msg_id}: все 3 попытки провалились")
+    log.error(f"Пост {msg_id}: все попытки провалились")
     return "error_all_retries_failed"
 
 
-# ── Проверка подписки ─────────────────────────────────────────────
-
+# ── Проверка подписки ─────────────────────────────────────────
 class VerifyRequest(BaseModel):
     init_data: str
 
@@ -303,8 +872,7 @@ async def fetch_icy_metadata(stream_url: str):
         ssl_ctx = ssl.create_default_context() if p.scheme == "https" else None
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port, ssl=ssl_ctx,
-                                    server_hostname=host if ssl_ctx else None),
-            timeout=5.0)
+                                    server_hostname=host if ssl_ctx else None), timeout=5.0)
         writer.write(f"GET {path} HTTP/1.0\r\nHost: {host}\r\nIcy-MetaData: 1\r\n"
                      f"User-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n".encode())
         await writer.drain()
@@ -345,16 +913,49 @@ async def fetch_icy_metadata(stream_url: str):
         return None
 
 
-# ── Эндпоинты ─────────────────────────────────────────────────────
+# ── Личные сообщения бота ─────────────────────────────────────
+async def handle_user_message(message: dict):
+    chat_id = message.get("chat", {}).get("id")
+    text    = message.get("text", "")
+    if not chat_id:
+        return
+    post_id = None
+    if text.startswith("/start"):
+        parts = text.split()
+        if len(parts) > 1:
+            try:
+                post_id = int(parts[1])
+            except ValueError:
+                pass
+    deeper_url = "https://maksjermy123.github.io/MyRadio/deeper.html"
+    if post_id:
+        deeper_url += f"?post_id={post_id}"
+    payload = {
+        "chat_id": chat_id,
+        "text": "📚 Нажми чтобы открыть материалы поста:",
+        "reply_markup": {"inline_keyboard": [[
+            {"text": "📚 Глубже", "web_app": {"url": deeper_url}}
+        ]]}
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+        if r.json().get("ok"):
+            log.info(f"✅ web_app кнопка → пользователю {chat_id}, пост {post_id}")
+        else:
+            log.warning(f"sendMessage error: {r.json().get('description')}")
+
+
+# ═══════════════════════════════════════════════════
+# ЭНДПОИНТЫ
+# ═══════════════════════════════════════════════════
 
 @app.head("/")
 async def root_head():
-    """HEAD для UptimeRobot — отвечаем 200 без тела."""
     return Response(status_code=200)
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "Radio Mini App Backend"}
+    return {"status": "ok", "service": "Radio + Deeper Mini App Backend"}
 
 
 @app.get("/metadata")
@@ -421,20 +1022,17 @@ async def webhook(request: Request):
     keys = [k for k in update if k != "update_id"]
     log.info(f"▶ update_id={update_id} | поля: {keys}")
 
+    # Личные сообщения пользователей боту
+    if update.get("message"):
+        asyncio.create_task(handle_user_message(update["message"]))
+        return {"ok": True}
+
     # Новый пост канала
     message = update.get("channel_post")
     is_edit = False
-
-    # Редактирование существующего поста
     if not message:
         message = update.get("edited_channel_post")
         is_edit = True
-
-    # Запасной вариант
-    if not message:
-        message = update.get("message")
-        is_edit = False
-
     if not message:
         log.info(f"update_id={update_id}: не пост — пропускаем")
         return {"ok": True, "action": "ignored", "fields": keys}
@@ -443,17 +1041,102 @@ async def webhook(request: Request):
     chat_username = chat.get("username", "")
     chat_id_num   = str(chat.get("id", ""))
     expected      = CHANNEL_ID.lstrip("@").lower()
-
-    # Принимаем если совпадает username ИЛИ числовой id
     username_match = bool(chat_username and chat_username.lower() == expected)
     id_match       = bool(chat_id_num and (chat_id_num == expected or chat_id_num == CHANNEL_ID))
-
     if not username_match and not id_match:
-        log.warning(f"update_id={update_id}: чужой чат @{chat_username} id={chat_id_num} — пропускаем")
+        log.warning(f"update_id={update_id}: чужой чат @{chat_username} — пропускаем")
         return {"ok": True, "action": "ignored_wrong_chat"}
 
     result = await upsert_post_to_github(message, is_edit=is_edit)
+
+    # Запускаем AI только для новых подходящих постов
+    if result == "added":
+        tags = extract_hashtags(message)
+        if should_process_ai(tags):
+            asyncio.create_task(process_post(message))
+
     return {"ok": True, "action": result, "post_id": message.get("message_id")}
+
+
+@app.get("/links/{post_id}")
+async def get_links(post_id: int):
+    async with httpx.AsyncClient(timeout=15) as client:
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not links_data or str(post_id) not in links_data:
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return links_data[str(post_id)]
+
+
+@app.post("/analyze/{post_id}")
+async def manual_analyze(post_id: int):
+    """Ручной запуск AI-анализа для существующего поста."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+    if not posts_data:
+        return JSONResponse(status_code=404, content={"error": "posts.json not found"})
+    post = next((p for p in posts_data["posts"] if p["id"] == post_id), None)
+    if not post:
+        return JSONResponse(status_code=404, content={"error": f"post {post_id} not found"})
+    asyncio.create_task(process_post({
+        "message_id": post_id,
+        "text": post.get("text", post.get("preview", "")),
+        "topics": post.get("topics", [])
+    }))
+    return {"ok": True, "message": f"Analysis started for post {post_id}"}
+
+
+@app.get("/reindex")
+async def reindex_all():
+    """Добавляет embeddings для постов у которых их нет."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        posts_data, posts_sha = await github_get(client, GITHUB_FILE)
+    if not posts_data:
+        return {"error": "posts.json not found"}
+    updated = 0
+    for post in posts_data.get("posts", []):
+        if post.get("embedding"):
+            continue
+        emb = await get_embedding(post.get("text", post.get("preview", "")))
+        if emb:
+            post["embedding"] = emb
+            updated += 1
+        await asyncio.sleep(0.5)
+    if updated > 0:
+        async with httpx.AsyncClient(timeout=20) as client:
+            _, sha = await github_get(client, GITHUB_FILE)
+            await github_put(client, GITHUB_FILE, posts_data, sha,
+                             f"reindex: added {updated} embeddings")
+    return {"ok": True, "updated": updated, "total": len(posts_data.get("posts", []))}
+
+
+@app.get("/bulk_deeper")
+async def bulk_deeper(delay: float = 1.5):
+    """Добавляет кнопку «Глубже» ко всем постам у которых уже есть links."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not links_data:
+        return {"error": "links.json not found or empty"}
+    post_ids = [int(k) for k in links_data.keys() if k.isdigit()]
+    post_ids.sort(reverse=True)
+
+    async def _run():
+        done = 0
+        for pid in post_ids:
+            await send_deeper_button(pid)
+            await asyncio.sleep(delay)
+            done += 1
+        log.info(f"bulk_deeper: добавил кнопки к {done} постам")
+
+    asyncio.create_task(_run())
+    return {"ok": True, "queued": len(post_ids), "delay_seconds": delay}
+
+
+@app.get("/reload_theology")
+async def reload_theology():
+    global _theology_cache
+    _theology_cache = None
+    db = await get_theology_db()
+    return {"ok": True, "loaded": len(db)}
 
 
 @app.get("/set_webhook")
@@ -466,7 +1149,6 @@ async def set_webhook(request: Request):
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
             json={
                 "url": webhook_url,
-                # Добавили edited_channel_post для отслеживания правок
                 "allowed_updates": ["channel_post", "edited_channel_post", "message"],
             })
         data = resp.json()
@@ -485,17 +1167,16 @@ async def check_webhook():
 
 @app.get("/debug_last")
 async def debug_last():
-    """Последние 5 постов в индексе — для проверки."""
     if not GITHUB_TOKEN:
         return {"error": "GITHUB_TOKEN not set"}
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            data, _ = await fetch_posts_json(client)
+            data, _ = await github_get(client, GITHUB_FILE)
             posts = data.get("posts", [])
             return {
                 "total": len(posts),
                 "updated": data.get("updated"),
-                "last_5": posts[:5],  # первые 5 = самые новые (сортировка новые сверху)
+                "last_5": posts[:5],
             }
         except Exception as e:
             return {"error": str(e)}
