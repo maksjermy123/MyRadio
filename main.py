@@ -1095,8 +1095,9 @@ async def get_links(post_id: int):
 
 
 @app.post("/analyze/{post_id}")
+@app.get("/analyze/{post_id}")
 async def manual_analyze(post_id: int):
-    """Ручной запуск AI-анализа для существующего поста."""
+    """Ручной запуск AI-анализа для существующего поста (GET и POST)."""
     async with httpx.AsyncClient(timeout=15) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
     if not posts_data:
@@ -1104,12 +1105,78 @@ async def manual_analyze(post_id: int):
     post = next((p for p in posts_data["posts"] if p["id"] == post_id), None)
     if not post:
         return JSONResponse(status_code=404, content={"error": f"post {post_id} not found"})
+    text = post.get("text") or post.get("preview") or post.get("title") or ""
+    topics = post.get("topics", [])
     asyncio.create_task(process_post({
         "message_id": post_id,
-        "text": post.get("text", post.get("preview", "")),
-        "topics": post.get("topics", [])
+        "text": text,
+        "topics": topics,
+        "date": 0,
+        "chat": {"username": CHANNEL_ID.lstrip("@")}
     }))
-    return {"ok": True, "message": f"Analysis started for post {post_id}"}
+    return {"ok": True, "message": f"Analysis started for post {post_id}", "text_len": len(text)}
+
+
+@app.get("/analyze_all")
+async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
+    """
+    Запускает AI-анализ для всех постов.
+    skip_existing=true — пропускает посты у которых уже есть links.
+    Открой в браузере и жди — анализ идёт в фоне.
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+
+    if not posts_data:
+        return {"error": "posts.json not found"}
+
+    links_data = links_data or {}
+    posts = posts_data.get("posts", [])
+
+    # Фильтруем что нужно анализировать
+    SKIP_TOPICS = {"📻 Анонсы канала", "📅 Челлендж: Лука"}
+    to_analyze = []
+    for post in posts:
+        post_topics = set(post.get("topics", []))
+        # Пропускаем анонсы и челленджи
+        if post_topics and post_topics.issubset(SKIP_TOPICS):
+            continue
+        # Пропускаем если уже есть аналитика
+        if skip_existing and str(post["id"]) in links_data:
+            continue
+        text = post.get("text") or post.get("preview") or post.get("title") or ""
+        if not text.strip():
+            continue
+        to_analyze.append(post)
+
+    log.info(f"analyze_all: {len(to_analyze)} постов к анализу, delay={delay}s")
+
+    async def _run():
+        done = 0
+        for post in to_analyze:
+            try:
+                await process_post({
+                    "message_id": post["id"],
+                    "text": post.get("text") or post.get("preview") or post.get("title") or "",
+                    "topics": post.get("topics", []),
+                    "date": 0,
+                    "chat": {"username": CHANNEL_ID.lstrip("@")}
+                })
+                done += 1
+                log.info(f"analyze_all: [{done}/{len(to_analyze)}] пост {post['id']} готов")
+            except Exception as e:
+                log.error(f"analyze_all: пост {post['id']} ошибка: {e}")
+            await asyncio.sleep(delay)
+        log.info(f"analyze_all: завершено {done}/{len(to_analyze)}")
+
+    asyncio.create_task(_run())
+    return {
+        "ok": True,
+        "queued": len(to_analyze),
+        "delay_seconds": delay,
+        "message": f"Анализ запущен для {len(to_analyze)} постов. Следи за логами Render."
+    }
 
 
 @app.get("/reindex")
