@@ -274,14 +274,41 @@ def _gh_headers() -> dict:
 
 
 async def github_get(client: httpx.AsyncClient, filename: str):
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
-    r = await client.get(url, headers=_gh_headers(), params={"ref": GITHUB_BRANCH})
+    """
+    Читает файл с GitHub.
+    Для файлов > 1 МБ GitHub API не возвращает content через Contents API —
+    используем Git Blobs API который не имеет ограничения по размеру.
+    """
+    # Сначала получаем SHA через Contents API (быстро, без содержимого)
+    meta_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
+    r = await client.get(meta_url, headers=_gh_headers(), params={"ref": GITHUB_BRANCH})
     if r.status_code == 404:
         return None, None
     r.raise_for_status()
-    data = r.json()
-    content = json.loads(base64.b64decode(data["content"]).decode())
-    return content, data["sha"]
+    meta = r.json()
+    sha = meta["sha"]
+    file_size = meta.get("size", 0)
+
+    # Если файл маленький — берём content прямо из ответа
+    if file_size < 900_000 and meta.get("content"):
+        try:
+            data = json.loads(base64.b64decode(meta["content"]).decode())
+            return data, sha
+        except Exception:
+            pass  # fallback на blob API
+
+    # Для больших файлов — Git Blobs API (без ограничения размера)
+    blob_url = f"https://api.github.com/repos/{GITHUB_REPO}/git/blobs/{sha}"
+    blob_headers = {**_gh_headers(), "Accept": "application/vnd.github.v3.raw"}
+    r2 = await client.get(blob_url, headers=blob_headers, timeout=30.0)
+    r2.raise_for_status()
+    # vnd.github.v3.raw возвращает сырой текст файла
+    try:
+        data = r2.json()
+    except Exception:
+        # Если вернулся raw content как текст
+        data = json.loads(r2.text)
+    return data, sha
 
 
 async def github_put(client: httpx.AsyncClient, filename: str, content: dict, sha, message: str):
