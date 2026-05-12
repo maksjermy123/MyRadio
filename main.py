@@ -647,10 +647,15 @@ async def analyze_post(post_text: str, topics: list):
 
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
-async def send_deeper_button(post_id: int):
+async def send_deeper_button(post_id: int, use_web_app: bool = False):
     deeper_url = f"{DEEPER_PAGE_URL}?post_id={post_id}"
-    # Используем url (не web_app) — web_app не поддерживается в каналах через editMessageReplyMarkup
-    keyboard = {"inline_keyboard": [[{"text": "📚 Глубже", "url": deeper_url}]]}
+    if use_web_app:
+        # web_app открывает страницу внутри Telegram (для новых постов через webhook)
+        btn = {"text": "📚 Глубже", "web_app": {"url": deeper_url}}
+    else:
+        # url — обычная ссылка (для старых постов через editMessageReplyMarkup)
+        btn = {"text": "📚 Глубже", "url": deeper_url}
+    keyboard = {"inline_keyboard": [[btn]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             f"{TELEGRAM_API}/editMessageReplyMarkup",
@@ -706,7 +711,7 @@ async def process_post(post: dict):
                     links_data = {}
                 links_data[str(post_id)] = humor_result
                 await github_put(client, GITHUB_LINKS_FILE, links_data, links_sha, f"Humor post {post_id}")
-        await send_deeper_button(post_id)
+        await send_deeper_button(post_id, use_web_app=True)
         log.info(f"😄 Humor post {post_id} saved.")
         return
 
@@ -761,7 +766,7 @@ async def process_post(post: dict):
                              f"links for post {post_id}")
 
     log.info(f"✅ Post {post_id} processed. Related: {result['related_posts']}")
-    await send_deeper_button(post_id)
+    await send_deeper_button(post_id, use_web_app=True)
 
 
 # ── posts.json: добавление/обновление ────────────────────────
