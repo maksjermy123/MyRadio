@@ -649,7 +649,8 @@ async def analyze_post(post_text: str, topics: list):
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int):
     deeper_url = f"{DEEPER_PAGE_URL}?post_id={post_id}"
-    keyboard = {"inline_keyboard": [[{"text": "📚 Глубже", "web_app": {"url": deeper_url}}]]}
+    # Используем url (не web_app) — web_app не поддерживается в каналах через editMessageReplyMarkup
+    keyboard = {"inline_keyboard": [[{"text": "📚 Глубже", "url": deeper_url}]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             f"{TELEGRAM_API}/editMessageReplyMarkup",
@@ -1258,6 +1259,87 @@ async def check_webhook():
         return (await client.get(
             f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo")).json()
 
+
+
+@app.get("/import_texts")
+async def import_texts():
+    """
+    Читает result.json с GitHub, добавляет полный текст в posts.json,
+    затем удаляет result.json с GitHub.
+    """
+    if not GITHUB_TOKEN:
+        return {"error": "GITHUB_TOKEN not set"}
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # Читаем result.json
+        try:
+            result_data, result_sha = await github_get(client, "result.json")
+        except Exception as e:
+            return {"error": f"result.json не найден на GitHub: {e}"}
+
+        messages = result_data.get("messages", [])
+        log.info(f"import_texts: {len(messages)} сообщений в result.json")
+
+        # Строим словарь id → полный текст
+        tg_texts = {}
+        for msg in messages:
+            if msg.get("type") != "message":
+                continue
+            mid = msg.get("id")
+            raw = msg.get("text", "")
+            if isinstance(raw, str):
+                text = raw
+            elif isinstance(raw, list):
+                text = "".join(
+                    p if isinstance(p, str) else p.get("text", "")
+                    for p in raw
+                )
+            else:
+                text = ""
+            if mid and text.strip():
+                tg_texts[mid] = text[:3000]
+
+        log.info(f"import_texts: текстов найдено: {len(tg_texts)}")
+
+        # Читаем posts.json
+        posts_data, posts_sha = await github_get(client, GITHUB_FILE)
+        posts = posts_data.get("posts", [])
+
+        # Обновляем тексты
+        updated = 0
+        for post in posts:
+            pid = post["id"]
+            if pid in tg_texts:
+                existing = post.get("text", "")
+                if not existing or len(existing) < 100:
+                    post["text"] = tg_texts[pid]
+                    updated += 1
+
+        log.info(f"import_texts: обновлено {updated} постов")
+
+        # Сохраняем posts.json
+        await github_put(client, GITHUB_FILE, posts_data, posts_sha,
+                         f"import: full text for {updated} posts")
+
+        # Удаляем result.json с GitHub
+        try:
+            del_body = {
+                "message": "cleanup: remove result.json",
+                "sha": result_sha,
+                "branch": GITHUB_BRANCH,
+            }
+            del_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/result.json"
+            await client.delete(del_url, headers=_gh_headers(), json=del_body)
+            log.info("import_texts: result.json удалён с GitHub")
+        except Exception as e:
+            log.warning(f"import_texts: не удалось удалить result.json: {e}")
+
+    return {
+        "ok": True,
+        "messages_in_export": len(tg_texts),
+        "posts_updated": updated,
+        "message": f"Готово! Обновлено {updated} постов. Теперь запусти /reindex и /analyze_all"
+    }
 
 @app.get("/debug_last")
 async def debug_last():
