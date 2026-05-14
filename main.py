@@ -93,8 +93,8 @@ HASHTAG_MAP = {
     "#анонс":           "📻 Анонсы канала",
     "#новости":         "📻 Анонсы канала",
 }
-IGNORE_TAGS  = {"#отчтениякпреображению"}
-SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука", "#цитата"}
+IGNORE_TAGS  = {"#отчтениякпреображению", "#продолжение"}
+SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука", "#цитата", "#продолжение"}
 
 # ── Карта книг Библии ─────────────────────────────────────────
 BOOK_NUM = {
@@ -681,6 +681,23 @@ async def process_post(post: dict):
     if not topics:
         log.info(f"process_post {post_id}: нет тем — пропускаем")
         return
+
+    # Склейка с предыдущим постом если он помечен #продолжение
+    # (текущий пост — вторая и финальная часть)
+    prev_id = post_id - 1
+    async with httpx.AsyncClient(timeout=15) as _cl:
+        _posts_check, _ = await github_get(_cl, GITHUB_FILE)
+    if _posts_check:
+        _prev = next((p for p in _posts_check.get("posts", []) if p["id"] == prev_id), None)
+        if _prev:
+            _prev_text = _prev.get("text", "") or _prev.get("preview", "")
+            _is_cont = (
+                "Продолжение ниже" in _prev_text
+                or "продолжение ниже" in _prev_text
+            )
+            if _is_cont and _prev_text:
+                text = (_prev_text.rstrip() + "\n\n" + text)[:6000]
+                log.info(f"📎 Пост {post_id} склеен с {prev_id} (суммарно {len(text)} симв.)")
 
     # Юмор: без Groq/Cohere
     if "😄 Юмор" in topics:
