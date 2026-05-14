@@ -529,11 +529,11 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
             return []
         top_score = results[0]["relevance_score"]
         # Высокий порог: если лучшая цитата не очень близка — не показываем ничего
-        if top_score < 0.65:
-            log.info(f"Theology: top_score={top_score:.3f} < 0.65 — цитаты не релевантны, пропускаем")
+        if top_score < 0.92:
+            log.info(f"Theology: top_score={top_score:.3f} < 0.92 — цитаты не релевантны, пропускаем")
             return []
-        # Берём только цитаты близкие к лучшей (не ниже 80% от топа)
-        threshold = top_score * 0.80
+        # Берём только цитаты близкие к лучшей (не ниже 85% от топа)
+        threshold = top_score * 0.85
         quotes = []
         seen_authors = set()
         for res in results:
