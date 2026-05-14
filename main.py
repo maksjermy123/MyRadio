@@ -94,7 +94,7 @@ HASHTAG_MAP = {
     "#новости":         "📻 Анонсы канала",
 }
 IGNORE_TAGS  = {"#отчтениякпреображению"}
-SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука"}
+SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука", "#цитата"}
 
 # ── Карта книг Библии ─────────────────────────────────────────
 BOOK_NUM = {
@@ -648,13 +648,13 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    deeper_url = f"{DEEPER_PAGE_URL}?post_id={post_id}"
-    if use_web_app:
-        # web_app открывает страницу внутри Telegram (для новых постов через webhook)
-        btn = {"text": "📚 Глубже", "web_app": {"url": deeper_url}}
-    else:
-        # url — обычная ссылка (для старых постов через editMessageReplyMarkup)
-        btn = {"text": "📚 Глубже", "url": deeper_url}
+    # Deep link вида t.me/bot/app?startapp=POST_ID:
+    # - является url-кнопкой → Telegram принимает через editMessageReplyMarkup
+    # - при нажатии открывает Mini App ВНУТРИ Telegram (не браузер)
+    # - post_id передаётся в initDataUnsafe.start_param на страницу deeper.html
+    bot_username = BOT_USERNAME.lstrip("@")
+    deep_link = f"https://t.me/{bot_username}/radio?startapp={post_id}"
+    btn = {"text": "📚 Глубже", "url": deep_link}
     keyboard = {"inline_keyboard": [[btn]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
@@ -664,21 +664,8 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
         result = r.json()
         if result.get("ok"):
             log.info(f"✅ Кнопка «Глубже» добавлена к посту {post_id}")
-            return
-        log.warning(f"edit failed: {result.get('description')} — пробуем sendMessage")
-        r2 = await client.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={
-                "chat_id": CHANNEL_ID,
-                "text": "📚 Библейский контекст и связи этого поста",
-                "reply_to_message_id": post_id,
-                "reply_markup": keyboard
-            }
-        )
-        if r2.json().get("ok"):
-            log.info(f"✅ Кнопка отправлена отдельным сообщением к {post_id}")
         else:
-            log.error(f"❌ Ошибка кнопки для {post_id}: {r2.json().get('description')}")
+            log.error(f"❌ Ошибка кнопки для {post_id}: {result.get('description')}")
 
 
 # ── Обработка поста AI ────────────────────────────────────────
