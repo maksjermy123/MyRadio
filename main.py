@@ -504,7 +504,7 @@ async def get_theology_db() -> list:
     return all_records
 
 
-async def find_theology_quotes(post_text: str, top_n: int = 3) -> list:
+async def find_theology_quotes(query: str, top_n: int = 3) -> list:
     if not COHERE_API_KEY:
         return []
     try:
@@ -516,7 +516,7 @@ async def find_theology_quotes(post_text: str, top_n: int = 3) -> list:
         documents = [rec["text"][:400] for rec in sample]
         payload = {
             "model": "rerank-multilingual-v3.0",
-            "query": post_text[:1000],
+            "query": query[:1000],
             "documents": documents,
             "top_n": top_n,
             "return_documents": True,
@@ -529,11 +529,11 @@ async def find_theology_quotes(post_text: str, top_n: int = 3) -> list:
             return []
         top_score = results[0]["relevance_score"]
         # Высокий порог: если лучшая цитата не очень близка — не показываем ничего
-        if top_score < 0.4:
-            log.info(f"Theology: top_score={top_score:.3f} < 0.4 — цитаты не релевантны, пропускаем")
+        if top_score < 0.65:
+            log.info(f"Theology: top_score={top_score:.3f} < 0.65 — цитаты не релевантны, пропускаем")
             return []
-        # Берём только цитаты близкие к лучшей (не ниже 70% от топа)
-        threshold = top_score * 0.70
+        # Берём только цитаты близкие к лучшей (не ниже 80% от топа)
+        threshold = top_score * 0.80
         quotes = []
         seen_authors = set()
         for res in results:
@@ -735,11 +735,17 @@ async def process_post(post: dict):
     try:
         related_task = (find_related_by_embedding(post_id, embedding, posts_data)
                         if embedding else asyncio.sleep(0))
-        result, related, theology_quotes = await asyncio.gather(
-            analyze_post(text, topics), related_task, find_theology_quotes(text)
+        # Groq анализ идёт первым — нам нужен reflection как точный запрос для Rerank
+        result, related = await asyncio.gather(
+            analyze_post(text, topics), related_task
         )
         if not embedding:
             related = []
+        # Используем reflection (тезис автора) как запрос для богословской базы —
+        # это точнее чем сырой текст поста
+        theology_query = result.get("reflection") or text[:500]
+        theology_query = f"{theology_query}\n\n{text[:500]}"
+        theology_quotes = await find_theology_quotes(theology_query)
     except Exception as e:
         log.error(f"AI error for post {post_id}: {e}")
         return
