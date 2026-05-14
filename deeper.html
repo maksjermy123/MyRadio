@@ -527,7 +527,14 @@
     }, { passive: true });
   }
 
-  load();
+  // Telegram передаёт initData (включая start_param) асинхронно.
+  // Если вызвать load() сразу — start_param ещё пуст.
+  // Ждём: если tg есть — даём 300мс на заполнение initDataUnsafe, иначе грузим сразу.
+  if (tg) {
+    setTimeout(load, 300);
+  } else {
+    load();
+  }
 </script>
 </body>
 </html>
