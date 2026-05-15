@@ -1228,6 +1228,109 @@ async def reindex_all():
     return {"ok": True, "updated": updated, "total": len(posts_data.get("posts", []))}
 
 
+def extract_tags_from_text(text: str) -> list:
+    """Восстанавливает хэштеги из сохранённого текста поста.
+    Используется для старых постов без поля tags."""
+    import re
+    return [m.lower() for m in re.findall(r'#\w+', text)]
+
+
+@app.get("/reindex_all")
+async def reindex_all_posts():
+    """Пересобирает posts.json: обновляет topics и tags для каждого поста.
+    Для постов без тегов в тексте — подтягивает оригинал из Telegram API.
+    Запускать после изменения HASHTAG_MAP."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, sha = await github_get(client, GITHUB_FILE)
+    if not posts_data:
+        return {"error": "posts.json not found"}
+
+    posts = posts_data.get("posts", [])
+    updated = 0
+    skipped = 0
+    fetched_from_tg = 0
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for post in posts:
+            # 1. Берём теги из поля tags или восстанавливаем из сохранённого текста
+            raw_tags = post.get("tags")
+            if not raw_tags:
+                text = post.get("text", "") or post.get("preview", "")
+                raw_tags = extract_tags_from_text(text)
+
+            # 2. Если тегов нет — текст обрезан, подтягиваем из Telegram
+            if not raw_tags:
+                try:
+                    tg_r = await client.get(
+                        f"{TELEGRAM_API}/getMessages",
+                        params={"chat_id": CHANNEL_ID, "message_ids": post["id"]}
+                    )
+                    msgs = tg_r.json().get("result", {}).get("messages", [])
+                    if not msgs:
+                        # Пробуем forwardMessages fallback через getChat
+                        tg_r2 = await client.post(
+                            f"{TELEGRAM_API}/copyMessage",
+                            json={"chat_id": CHANNEL_ID, "from_chat_id": CHANNEL_ID,
+                                  "message_id": post["id"], "disable_notification": True}
+                        )
+                    if msgs:
+                        msg = msgs[0]
+                        raw_tags = extract_hashtags(msg)
+                        full_text = (msg.get("text","") or msg.get("caption","") or "")[:3000]
+                        if full_text:
+                            post["text"] = full_text
+                        fetched_from_tg += 1
+                        await asyncio.sleep(0.3)
+                except Exception as e:
+                    log.warning(f"TG fetch failed for post {post['id']}: {e}")
+
+            if not raw_tags:
+                skipped += 1
+                continue
+
+            new_topics = hashtags_to_topics(raw_tags)
+            new_tags   = get_post_tags(raw_tags)
+
+            if not new_topics:
+                skipped += 1
+                continue
+
+            changed = (new_topics != post.get("topics") or new_tags != post.get("tags"))
+            post["topics"] = new_topics
+            post["tags"]   = new_tags
+            if changed:
+                updated += 1
+
+    posts_data["topics"] = recalc_topics(posts)
+    posts_data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        _, fresh_sha = await github_get(client, GITHUB_FILE)
+        await github_put(client, GITHUB_FILE, posts_data, fresh_sha,
+                         f"reindex_all: updated {updated} posts")
+    log.info(f"reindex_all: обновлено {updated}, из TG: {fetched_from_tg}, пропущено {skipped} из {len(posts)}")
+    return {"ok": True, "updated": updated, "fetched_from_telegram": fetched_from_tg,
+            "skipped": skipped, "total": len(posts)}
+
+
+@app.get("/remove_button/{post_id}")
+async def remove_button(post_id: int):
+    """Удаляет inline-кнопку с поста канала (ставит пустую клавиатуру)."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{TELEGRAM_API}/editMessageReplyMarkup",
+            json={"chat_id": CHANNEL_ID, "message_id": post_id,
+                  "reply_markup": {"inline_keyboard": []}}
+        )
+    result = r.json()
+    if result.get("ok"):
+        log.info(f"✅ Кнопка удалена с поста {post_id}")
+        return {"ok": True, "post_id": post_id}
+    else:
+        log.error(f"❌ Ошибка удаления кнопки {post_id}: {result.get('description')}")
+        return {"ok": False, "error": result.get("description")}
+
+
 @app.get("/bulk_deeper")
 async def bulk_deeper(delay: float = 1.5):
     """Добавляет кнопку «Глубже» ко всем постам у которых уже есть links."""
