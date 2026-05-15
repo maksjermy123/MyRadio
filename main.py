@@ -1180,18 +1180,35 @@ async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
     async def _run():
         done = 0
         for post in to_analyze:
+            pid = post["id"]
+            # Восстанавливаем теги из текста если поле tags отсутствует
+            post_tags = post.get("tags") or extract_tags_from_text(
+                post.get("text","") or post.get("preview",""))
+            # Пропускаем первые части спаренных постов
+            if "#продолжение" in post_tags:
+                log.info(f"analyze_all: пост {pid} — #продолжение, пропускаем")
+                done += 1
+                await asyncio.sleep(0.5)
+                continue
+            # Пропускаем посты без AI-тегов (анонсы, чистые цитаты и т.д.)
+            if not should_process_ai(post_tags):
+                log.info(f"analyze_all: пост {pid} — нет AI-тегов, пропускаем")
+                done += 1
+                await asyncio.sleep(0.5)
+                continue
             try:
                 await process_post({
-                    "message_id": post["id"],
+                    "message_id": pid,
                     "text": post.get("text") or post.get("preview") or post.get("title") or "",
                     "topics": post.get("topics", []),
+                    "tags": post_tags,
                     "date": 0,
                     "chat": {"username": CHANNEL_ID.lstrip("@")}
                 })
                 done += 1
-                log.info(f"analyze_all: [{done}/{len(to_analyze)}] пост {post['id']} готов")
+                log.info(f"analyze_all: [{done}/{len(to_analyze)}] пост {pid} готов")
             except Exception as e:
-                log.error(f"analyze_all: пост {post['id']} ошибка: {e}")
+                log.error(f"analyze_all: пост {pid} ошибка: {e}")
             await asyncio.sleep(delay)
         log.info(f"analyze_all: завершено {done}/{len(to_analyze)}")
 
@@ -1258,31 +1275,11 @@ async def reindex_all_posts():
                 text = post.get("text", "") or post.get("preview", "")
                 raw_tags = extract_tags_from_text(text)
 
-            # 2. Если тегов нет — текст обрезан, подтягиваем из Telegram
+            # 2. Если тегов нет в тексте — теги в конце текста были обрезаны.
+            # Bot API не позволяет читать старые посты канала без пересылки.
+            # Такие посты помечаем для ручной проверки.
             if not raw_tags:
-                try:
-                    tg_r = await client.get(
-                        f"{TELEGRAM_API}/getMessages",
-                        params={"chat_id": CHANNEL_ID, "message_ids": post["id"]}
-                    )
-                    msgs = tg_r.json().get("result", {}).get("messages", [])
-                    if not msgs:
-                        # Пробуем forwardMessages fallback через getChat
-                        tg_r2 = await client.post(
-                            f"{TELEGRAM_API}/copyMessage",
-                            json={"chat_id": CHANNEL_ID, "from_chat_id": CHANNEL_ID,
-                                  "message_id": post["id"], "disable_notification": True}
-                        )
-                    if msgs:
-                        msg = msgs[0]
-                        raw_tags = extract_hashtags(msg)
-                        full_text = (msg.get("text","") or msg.get("caption","") or "")[:3000]
-                        if full_text:
-                            post["text"] = full_text
-                        fetched_from_tg += 1
-                        await asyncio.sleep(0.3)
-                except Exception as e:
-                    log.warning(f"TG fetch failed for post {post['id']}: {e}")
+                log.warning(f"reindex_all: пост {post['id']} — теги не найдены в тексте, пропускаем")
 
             if not raw_tags:
                 skipped += 1
@@ -1329,6 +1326,60 @@ async def remove_button(post_id: int):
     else:
         log.error(f"❌ Ошибка удаления кнопки {post_id}: {result.get('description')}")
         return {"ok": False, "error": result.get("description")}
+
+
+@app.get("/cleanup")
+async def cleanup(delay: float = 1.0):
+    """Чистит лишние кнопки и links.json:
+    - Удаляет кнопки с постов #продолжение (первые части пар)
+    - Удаляет кнопки с постов без AI-тегов (#цитата, #анонс и т.д.)
+    - Удаляет записи таких постов из links.json
+    Запускай после analyze_all."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data or not links_data:
+        return {"error": "posts.json or links.json not found"}
+
+    removed_buttons = []
+    removed_links = []
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        for post in posts_data.get("posts", []):
+            pid = post["id"]
+            post_tags = post.get("tags") or extract_tags_from_text(
+                post.get("text","") or post.get("preview",""))
+
+            should_have_button = (
+                should_process_ai(post_tags)
+                and "#продолжение" not in post_tags
+                and str(pid) in links_data
+            )
+
+            if not should_have_button:
+                # Удаляем кнопку
+                r = await client.post(
+                    f"{TELEGRAM_API}/editMessageReplyMarkup",
+                    json={"chat_id": CHANNEL_ID, "message_id": pid,
+                          "reply_markup": {"inline_keyboard": []}}
+                )
+                if r.json().get("ok"):
+                    removed_buttons.append(pid)
+                    log.info(f"🗑 Кнопка удалена с поста {pid}")
+                # Удаляем из links.json
+                if str(pid) in links_data:
+                    del links_data[str(pid)]
+                    removed_links.append(pid)
+                await asyncio.sleep(delay)
+
+    if removed_links:
+        async with httpx.AsyncClient(timeout=30) as client:
+            _, fresh_sha = await github_get(client, GITHUB_LINKS_FILE)
+            await github_put(client, GITHUB_LINKS_FILE, links_data, fresh_sha,
+                             f"cleanup: removed {len(removed_links)} entries")
+
+    log.info(f"cleanup: кнопки удалены {removed_buttons}, links удалены {removed_links}")
+    return {"ok": True, "removed_buttons": removed_buttons, "removed_links": removed_links}
 
 
 @app.get("/bulk_deeper")
