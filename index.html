@@ -631,7 +631,14 @@ function runSearch(q){
   document.getElementById('toc-cats').style.display='none';
   document.getElementById('toc-posts').classList.remove('vis');
   document.getElementById('toc-sres').classList.add('vis');
-  var res=(tocData.posts||[]).filter(function(p){return(p.title&&p.title.toLowerCase().indexOf(q)!==-1)||(p.preview&&p.preview.toLowerCase().indexOf(q)!==-1);});
+  var res=(tocData.posts||[]).filter(function(p){
+    if(p.title&&p.title.toLowerCase().indexOf(q)!==-1) return true;
+    if(p.preview&&p.preview.toLowerCase().indexOf(q)!==-1) return true;
+    // Поиск по тегам (основным и второстепенным)
+    if(p.tags&&p.tags.some(function(t){return t.toLowerCase().indexOf(q)!==-1})) return true;
+    if(p.topics&&p.topics.some(function(t){return t.toLowerCase().indexOf(q)!==-1})) return true;
+    return false;
+  });
   document.getElementById('srt').textContent='Найдено: '+res.length;
   renderCards(res,document.getElementById('sres-list'));
   updBack();
