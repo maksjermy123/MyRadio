@@ -65,26 +65,17 @@ def _cohere_headers():
     return {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
 
 # ── Хэштеги ───────────────────────────────────────────────────
+# Основные теги → категории в оглавлении
 HASHTAG_MAP = {
     "#библия":          "📖 Библия и толкование",
     "#богословие":      "✝️ Богословие",
     "#теодицея":        "😔 Теодицея",
-    "#фильм":           "😔 Теодицея",
     "#книги":           "📚 Книги и авторы",
-    "#достоевский":     "📚 Достоевский",
-    "#солженицын":      "📚 Книги и авторы",
-    "#клайвльюис":      "📚 Книги и авторы",
-    "#чехов":           "📚 Книги и авторы",
-    "#лесков":          "📚 Книги и авторы",
-    "#толстой":         "📚 Книги и авторы",
-    "#филиппянси":      "📚 Книги и авторы",
     "#жизнь":           "🌱 Христианская жизнь",
     "#молитва":         "🙏 Молитва и духовная жизнь",
     "#духовныйдневник": "📔 Духовный дневник",
     "#проповедь":       "🎤 Проповедь и семинар",
-    "#семинар":         "🎤 Проповедь и семинар",
     "#челлендж":        "📅 Челлендж: Лука",
-    "#лука":            "📅 Челлендж: Лука",
     "#история":         "🏛️ История и церковь",
     "#размышления":     "💬 Размышления и цитаты",
     "#цитата":          "💬 Размышления и цитаты",
@@ -93,6 +84,14 @@ HASHTAG_MAP = {
     "#анонс":           "📻 Анонсы канала",
     "#новости":         "📻 Анонсы канала",
 }
+
+# Второстепенные теги — только для поиска, без отдельной категории.
+# Бот автоматически добавляет сюда новые неизвестные теги.
+SECONDARY_TAGS = {
+    "#фильм", "#достоевский", "#солженицын", "#клайвльюис",
+    "#чехов", "#лесков", "#толстой", "#семинар", "#лука",
+}
+
 IGNORE_TAGS  = {"#отчтениякпреображению", "#продолжение"}
 SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука", "#цитата", "#продолжение"}
 
@@ -350,6 +349,8 @@ def extract_hashtags(message: dict) -> list:
 
 
 def hashtags_to_topics(tags: list) -> list:
+    """Возвращает категории для оглавления. Неизвестные теги автоматически
+    добавляются в SECONDARY_TAGS — они доступны для поиска, но без категории."""
     topics, seen = [], set()
     for tag in tags:
         if tag in IGNORE_TAGS:
@@ -358,7 +359,16 @@ def hashtags_to_topics(tags: list) -> list:
         if cat and cat not in seen:
             topics.append(cat)
             seen.add(cat)
+        elif not cat and tag not in SECONDARY_TAGS and tag not in SKIP_AI_TAGS:
+            # Новый неизвестный тег — запоминаем как второстепенный
+            log.info(f"🆕 Новый тег: {tag} → добавлен в SECONDARY_TAGS")
+            SECONDARY_TAGS.add(tag)
     return topics
+
+
+def get_post_tags(tags: list) -> list:
+    """Все теги поста для поиска: основные + второстепенные (без служебных)."""
+    return [t for t in tags if t not in IGNORE_TAGS]
 
 
 def extract_title_and_preview(message: dict) -> tuple:
@@ -796,10 +806,12 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
     date_raw   = message.get("date", 0)
     date_str   = datetime.fromtimestamp(date_raw, tz=timezone.utc).strftime("%Y-%m-%d")
     chan_user   = (message.get("chat") or {}).get("username") or CHANNEL_ID.lstrip("@")
+    # tags — все теги поста (основные + второстепенные), для поиска в оглавлении
+    all_tags = get_post_tags(tags)
     new_post = {
         "id": msg_id, "date": date_str, "title": title,
         "preview": preview, "url": f"https://t.me/{chan_user}/{msg_id}",
-        "topics": topics, "text": text_full,
+        "topics": topics, "tags": all_tags, "text": text_full,
     }
 
     async with _github_lock:
