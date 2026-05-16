@@ -123,6 +123,7 @@ BOOK_NUM = {
     "Евреям": 65, "Откровение": 66,
 }
 
+# Индексы соответствуют порядку книг в ru_synodal.json
 BOOK_JSON_INDEX = {
     "Бытие": 0, "Исход": 1, "Левит": 2, "Числа": 3, "Второзаконие": 4,
     "Иисус Навин": 5, "Судьи": 6, "Руфь": 7,
@@ -137,16 +138,17 @@ BOOK_JSON_INDEX = {
     "Наум": 33, "Аввакум": 34, "Софония": 35, "Аггей": 36,
     "Захария": 37, "Малахия": 38,
     "Матфей": 39, "Марк": 40, "Лука": 41, "Иоанн": 42, "Деяния": 43,
-    "Иакова": 44,
-    "1 Петра": 45, "2 Петра": 46,
-    "1 Иоанна": 47, "2 Иоанна": 48, "3 Иоанна": 49,
-    "Иуды": 50,
-    "Римлянам": 51,
-    "1 Коринфянам": 52, "2 Коринфянам": 53,
-    "Галатам": 54, "Ефесянам": 55, "Филиппийцам": 56, "Колоссянам": 57,
-    "1 Фессалоникийцам": 58, "2 Фессалоникийцам": 59,
-    "1 Тимофею": 60, "2 Тимофею": 61, "Титу": 62, "Филимону": 63,
-    "Евреям": 64, "Откровение": 65,
+    "Римлянам": 44,
+    "1 Коринфянам": 45, "2 Коринфянам": 46,
+    "Галатам": 47, "Ефесянам": 48, "Филиппийцам": 49, "Колоссянам": 50,
+    "1 Фессалоникийцам": 51, "2 Фессалоникийцам": 52,
+    "1 Тимофею": 53, "2 Тимофею": 54, "Титу": 55, "Филимону": 56,
+    "Евреям": 57,
+    "Иакова": 58,
+    "1 Петра": 59, "2 Петра": 60,
+    "1 Иоанна": 61, "2 Иоанна": 62, "3 Иоанна": 63,
+    "Иуды": 64,
+    "Откровение": 65,
 }
 
 BOOK_ALIASES = {
@@ -1141,6 +1143,57 @@ async def manual_analyze(post_id: int):
         "chat": {"username": CHANNEL_ID.lstrip("@")}
     }))
     return {"ok": True, "message": f"Analysis started for post {post_id}", "text_len": len(text)}
+
+
+@app.get("/analyze_range")
+async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_existing: bool = False):
+    """Анализирует посты в диапазоне ID (включительно). 
+    Пример: /analyze_range?from_id=220&to_id=290&delay=20"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data:
+        return {"error": "posts.json not found"}
+
+    all_posts = sorted(posts_data.get("posts", []), key=lambda p: p["id"])
+    to_analyze = [p for p in all_posts if from_id <= p["id"] <= to_id]
+    if skip_existing:
+        to_analyze = [p for p in to_analyze if str(p["id"]) not in (links_data or {})]
+
+    log.info(f"analyze_range {from_id}-{to_id}: {len(to_analyze)} постов, delay={delay}s")
+
+    async def _run():
+        done = 0
+        for post in to_analyze:
+            pid = post["id"]
+            post_tags = post.get("tags") or extract_tags_from_text(
+                post.get("text","") or post.get("preview",""))
+            if "#продолжение" in post_tags:
+                log.info(f"analyze_range: пост {pid} — #продолжение, пропускаем")
+                done += 1
+                continue
+            if not should_process_ai(post_tags):
+                log.info(f"analyze_range: пост {pid} — нет AI-тегов, пропускаем")
+                done += 1
+                continue
+            try:
+                await process_post({
+                    "message_id": pid,
+                    "text": post.get("text") or post.get("preview") or post.get("title") or "",
+                    "topics": post.get("topics", []),
+                    "tags": post_tags,
+                    "date": 0,
+                    "chat": {"username": CHANNEL_ID.lstrip("@")}
+                })
+                done += 1
+                log.info(f"analyze_range: [{done}/{len(to_analyze)}] пост {pid} готов")
+            except Exception as e:
+                log.error(f"analyze_range: пост {pid} ошибка: {e}")
+            await asyncio.sleep(delay)
+        log.info(f"analyze_range {from_id}-{to_id}: завершено {done}/{len(to_analyze)}")
+
+    asyncio.create_task(_run())
+    return {"ok": True, "range": f"{from_id}-{to_id}", "queued": len(to_analyze), "delay_seconds": delay}
 
 
 @app.get("/analyze_all")
