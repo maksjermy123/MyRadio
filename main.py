@@ -649,12 +649,20 @@ async def analyze_post(post_text: str, topics: list):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
     }
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
+    # Retry при 429 (rate limit Groq): ждём до 65 сек и пробуем ещё раз
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
+        if r.status_code == 429:
+            wait = 65 if attempt == 0 else 120
+            log.warning(f"Groq 429 rate limit, attempt {attempt+1}/3, ждём {wait}s...")
+            await asyncio.sleep(wait)
+            continue
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
         text = text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         return json.loads(text)
+    raise Exception("Groq rate limit: все 3 попытки исчерпаны")
 
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
