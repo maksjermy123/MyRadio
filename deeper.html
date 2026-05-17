@@ -9,7 +9,7 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg: #f5f0e8; --card: #fffdf8; --accent: #2e7d32; --accent2: #4caf50;
-      --text: #000000; --muted: #444444; --border: #e0d8cc;
+      --text: #2c2c2c; --muted: #7a7a6e; --border: #e0d8cc;
       --shadow: 0 2px 12px rgba(0,0,0,0.07); --quote-bg: #f7f3ea;
       --chip-bg: #e8f5e9; --skeleton: #e8e2d8; --skeleton2: #f0ebe2;
     }
@@ -21,7 +21,7 @@
     }
     html { scroll-behavior: smooth; }
     body {
-      font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--text);
+      font-family: -apple-system,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text);
       min-height: 100vh; padding: 0 0 48px;
       transition: background 0.3s, color 0.3s; overscroll-behavior-y: contain;
     }
@@ -35,7 +35,7 @@
       position:sticky; top:0; z-index:10;
       display:flex; align-items:center; justify-content:space-between;
     }
-    .header-left h1 { font-family:Georgia,'DejaVu Serif',serif; font-size:1.4rem; font-weight:600; }
+    .header-left h1 { font-family:Georgia,serif; font-size:1.4rem; font-weight:600; }
     .header-left p { font-size:0.75rem; opacity:0.85; margin-top:1px; }
     .skeleton-wrap { padding:16px 12px; display:flex; flex-direction:column; gap:14px; }
     .skeleton-card { background:var(--card); border-radius:14px; overflow:hidden; box-shadow:var(--shadow); }
@@ -74,7 +74,7 @@
       border-bottom:1px solid var(--border);
     }
     .card-header h2 {
-      font-family:Georgia,'DejaVu Serif',serif; font-size:1.05rem;
+      font-family:Georgia,serif; font-size:1.05rem;
       font-weight:600; color:var(--accent); flex:1;
     }
     .topics { display:flex; flex-wrap:wrap; gap:6px; padding:10px 14px 12px; }
@@ -105,14 +105,14 @@
     }
     .bible-ref-row { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
     .bible-ref {
-      font-family:Georgia,'DejaVu Serif',serif; font-size:1.12rem;
+      font-family:Georgia,serif; font-size:1.12rem;
       font-weight:600; color:var(--accent); line-height:1.2;
     }
     .bible-verse-count { font-size:0.7rem; color:var(--muted); font-weight:600; }
     .bible-theme { font-size:0.78rem; color:var(--muted); margin-top:3px; line-height:1.4; }
     .bible-text-wrap { margin-top:9px; position:relative; }
     .bible-text {
-      font-family:Georgia,'DejaVu Serif',serif; font-size:1rem; line-height:1.65;
+      font-family:Georgia,serif; font-size:1rem; line-height:1.65;
       color:var(--text); font-style:italic; padding:9px 11px;
       background:var(--quote-bg); border-left:3px solid var(--accent2);
       border-radius:0 6px 6px 0; max-height:150px; overflow:hidden;
@@ -146,7 +146,7 @@
     }
     .theology-title { font-size:0.72rem; color:var(--muted); margin-bottom:8px; }
     .theology-text {
-      font-family:Georgia,'DejaVu Serif',serif; font-size:1rem; line-height:1.65;
+      font-family:Georgia,serif; font-size:1rem; line-height:1.65;
       font-style:italic; color:var(--text); padding:8px 11px;
       background:var(--quote-bg); border-left:3px solid var(--accent2);
       border-radius:0 6px 6px 0; max-height:140px; overflow:hidden;
@@ -158,7 +158,7 @@
       background:linear-gradient(transparent, var(--quote-bg));
     }
     .reflection-body {
-      padding:13px 14px; font-family:Georgia,'DejaVu Serif',serif;
+      padding:13px 14px; font-family:Georgia,serif;
       font-size:1.08rem; line-height:1.65; font-style:italic; color:var(--text);
     }
     .reflection-body::before { content:'«'; color:var(--accent); }
@@ -170,7 +170,7 @@
     }
     .humor-emoji { font-size:2.5rem; margin-bottom:12px; }
     .humor-quote {
-      font-family:Georgia,'DejaVu Serif',serif; font-size:1.15rem;
+      font-family:Georgia,serif; font-size:1.15rem;
       font-style:italic; line-height:1.65; color:var(--text);
     }
     .humor-quote::before { content:'«'; color:var(--accent); }
