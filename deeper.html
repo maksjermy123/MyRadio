@@ -10,7 +10,7 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg: #f5f0e8; --card: #fffdf8; --accent: #2e7d32; --accent2: #4caf50;
-      --text: #2c2c2c; --muted: #7a7a6e; --border: #e0d8cc;
+      --text: #111111; --muted: #555550; --border: #e0d8cc;
       --shadow: 0 2px 12px rgba(0,0,0,0.07); --quote-bg: #f7f3ea;
       --chip-bg: #e8f5e9; --skeleton: #e8e2d8; --skeleton2: #f0ebe2;
     }
@@ -527,14 +527,7 @@
     }, { passive: true });
   }
 
-  // При открытии через t.me/bot/deeper?startapp=POST_ID
-  // Telegram передаёт start_param асинхронно — ждём 300мс.
-  // Если открыто напрямую в браузере (tg нет) — грузим сразу.
-  if (window.Telegram?.WebApp) {
-    setTimeout(load, 300);
-  } else {
-    load();
-  }
+  load();
 </script>
 </body>
 </html>
