@@ -1488,6 +1488,20 @@ async def update_buttons(delay: float = 1.5):
                     desc = result.get("description","")
                     if "not modified" in desc:
                         log.info(f"⏭ Пост {pid} — кнопка уже актуальна")
+                    elif "Too Many Requests" in desc:
+                        wait = result.get("parameters", {}).get("retry_after", 30)
+                        log.warning(f"⏳ Telegram 429 для поста {pid}, ждём {wait}s...")
+                        await asyncio.sleep(wait + 1)
+                        # Повторная попытка
+                        r2 = await client.post(
+                            f"{TELEGRAM_API}/editMessageReplyMarkup",
+                            json={"chat_id": CHANNEL_ID, "message_id": pid,
+                                  "reply_markup": keyboard}
+                        )
+                        if r2.json().get("ok"):
+                            log.info(f"✅ Кнопка обновлена (retry): пост {pid}")
+                        else:
+                            log.error(f"❌ Пост {pid}: {r2.json().get('description')}")
                     else:
                         log.error(f"❌ Пост {pid}: {desc}")
                 done += 1
