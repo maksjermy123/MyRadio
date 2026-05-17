@@ -1444,6 +1444,60 @@ async def cleanup(delay: float = 1.0):
     return {"ok": True, "removed_buttons": removed_buttons, "removed_links": removed_links}
 
 
+@app.get("/update_buttons")
+async def update_buttons(delay: float = 1.5):
+    """Обновляет кнопки «Глубже» на всех постах у которых есть links.json запись.
+    Не запускает AI — только переставляет кнопки с актуальным URL."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data or not links_data:
+        return {"error": "posts.json or links.json not found"}
+
+    bot_username = BOT_USERNAME.lstrip("@")
+    posts = posts_data.get("posts", [])
+    queued = []
+
+    for post in posts:
+        pid = post["id"]
+        post_tags = post.get("tags") or extract_tags_from_text(
+            post.get("text","") or post.get("preview",""))
+        # Только посты с AI-анализом и правильными тегами
+        if str(pid) not in links_data:
+            continue
+        if not should_process_ai(post_tags) or "#продолжение" in post_tags:
+            continue
+        queued.append(pid)
+
+    async def _run():
+        done = 0
+        async with httpx.AsyncClient(timeout=10) as client:
+            for pid in queued:
+                miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={pid}"
+                btn = {"text": "📚 Глубже", "url": miniapp_url}
+                keyboard = {"inline_keyboard": [[btn]]}
+                r = await client.post(
+                    f"{TELEGRAM_API}/editMessageReplyMarkup",
+                    json={"chat_id": CHANNEL_ID, "message_id": pid,
+                          "reply_markup": keyboard}
+                )
+                result = r.json()
+                if result.get("ok"):
+                    log.info(f"✅ Кнопка обновлена: пост {pid}")
+                else:
+                    desc = result.get("description","")
+                    if "not modified" in desc:
+                        log.info(f"⏭ Пост {pid} — кнопка уже актуальна")
+                    else:
+                        log.error(f"❌ Пост {pid}: {desc}")
+                done += 1
+                await asyncio.sleep(delay)
+        log.info(f"update_buttons: обновлено {done} постов")
+
+    asyncio.create_task(_run())
+    return {"ok": True, "queued": len(queued), "delay_seconds": delay}
+
+
 @app.get("/bulk_deeper")
 async def bulk_deeper(delay: float = 1.5):
     """Добавляет кнопку «Глубже» ко всем постам у которых уже есть links."""
