@@ -667,12 +667,12 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    # Прямая ссылка на deeper.html с post_id в URL параметре.
-    # url-кнопка → Telegram принимает через editMessageReplyMarkup.
-    # Открывается как Mini App внутри Telegram (домен привязан к боту).
-    # post_id читается из window.location.search — надёжно на всех платформах.
-    direct_url = f"{DEEPER_PAGE_URL}?post_id={post_id}"
-    btn = {"text": "📚 Глубже", "url": direct_url}
+    # t.me/bot/deeper?startapp=POST_ID — официальный Telegram Mini App deeplink.
+    # Telegram открывает deeper.html как Mini App внутри себя (не браузер).
+    # post_id передаётся в initDataUnsafe.start_param → deeper.html его читает.
+    bot_username = BOT_USERNAME.lstrip("@")
+    miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
+    btn = {"text": "📚 Глубже", "url": miniapp_url}
     keyboard = {"inline_keyboard": [[btn]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
