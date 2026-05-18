@@ -94,6 +94,7 @@ icon.png            — иконка для Media Session (Android/iOS)
 | `/analyze_range?from_id=X&to_id=Y&delay=20` | AI-анализ диапазона постов (по очереди с задержкой) |
 | `/analyze_all?skip_existing=true&delay=20` | AI-анализ всех постов (skip_existing=false — заново) |
 | `/bulk_deeper` | Добавляет кнопку «Глубже» ко всем постам у которых есть links |
+| `/update_buttons` | Обновляет URL кнопок «Глубже» на всех постах (без запуска AI). Использовать после смены формата ссылки кнопки |
 | `/remove_button/{post_id}` | Удаляет кнопку с поста канала |
 | `/cleanup` | Удаляет кнопки с постов без AI-тегов (#цитата, #продолжение и т.д.) |
 | `/debug_last` | Последние 5 постов в индексе |
@@ -269,6 +270,26 @@ URL:   https://t.me/preoradio_bot/radio
 Текст: 📖 Оглавление + Радио
 ```
 
+### Шаг 7 — Зарегистрировать два Mini App в BotFather
+
+Бот использует два отдельных Mini App:
+
+**Приложение `radio`** (Оглавление + Радио):
+```
+/mybots → бот → Bot Settings → Mini Apps → Add Mini App
+Short name: radio
+URL: https://maksjermy123.github.io/MyRadio/
+```
+
+**Приложение `deeper`** (страница «Глубже»):
+```
+/mybots → бот → Bot Settings → Mini Apps → Add Mini App
+Short name: deeper
+URL: https://maksjermy123.github.io/MyRadio/deeper.html
+```
+
+⚠️ Важно: URL для `deeper` должен указывать именно на `deeper.html`, иначе кнопка «Глубже» будет открывать оглавление вместо контента поста.
+
 ---
 
 ## Переиндексация (при изменении кода)
@@ -294,6 +315,14 @@ https://myradio-rrsk.onrender.com/cleanup
 ```
 
 ---
+
+## Технические детали
+
+**Шрифты** — `deeper.html` использует системные шрифты (Georgia для текста Писания и цитат, `-apple-system` для интерфейса). Google Fonts не используется — страница загружается быстрее и не зависит от внешних CDN.
+
+**Кнопка «Глубже»** — использует формат `https://t.me/preoradio_bot/deeper?startapp=POST_ID`. Telegram открывает её как Mini App внутри себя (не браузер). `POST_ID` передаётся в `initDataUnsafe.start_param` на страницу `deeper.html`.
+
+**Groq rate limit** — при ошибке 429 код автоматически ждёт 65 секунд и повторяет запрос (до 3 попыток). Если лимит исчерпан на весь день — ждать сброса в 03:00 по Москве.
 
 ## Поддержание сервиса
 
