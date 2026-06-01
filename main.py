@@ -14,8 +14,7 @@ import math
 import logging
 import random
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timezone
 from urllib.parse import unquote, parse_qsl
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,8 +52,6 @@ GROQ_API_KEY              = os.environ.get("GROQ_API_KEY", "")
 COHERE_API_KEY            = os.environ.get("COHERE_API_KEY", "")
 BOT_USERNAME              = os.environ.get("BOT_USERNAME", "preoradio_bot")
 DEEPER_PAGE_URL           = f"https://maksjermy123.github.io/MyRadio/deeper.html"
-SUPABASE_URL              = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY              = os.environ.get("SUPABASE_KEY", "")
 
 TELEGRAM_API  = f"https://api.telegram.org/bot{BOT_TOKEN}"
 GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
@@ -68,26 +65,17 @@ def _cohere_headers():
     return {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
 
 # ── Хэштеги ───────────────────────────────────────────────────
+# Основные теги → категории в оглавлении
 HASHTAG_MAP = {
     "#библия":          "📖 Библия и толкование",
     "#богословие":      "✝️ Богословие",
     "#теодицея":        "😔 Теодицея",
-    "#фильм":           "😔 Теодицея",
     "#книги":           "📚 Книги и авторы",
-    "#достоевский":     "📚 Достоевский",
-    "#солженицын":      "📚 Книги и авторы",
-    "#клайвльюис":      "📚 Книги и авторы",
-    "#чехов":           "📚 Книги и авторы",
-    "#лесков":          "📚 Книги и авторы",
-    "#толстой":         "📚 Книги и авторы",
-    "#филиппянси":      "📚 Книги и авторы",
     "#жизнь":           "🌱 Христианская жизнь",
     "#молитва":         "🙏 Молитва и духовная жизнь",
     "#духовныйдневник": "📔 Духовный дневник",
     "#проповедь":       "🎤 Проповедь и семинар",
-    "#семинар":         "🎤 Проповедь и семинар",
     "#челлендж":        "📅 Челлендж: Лука",
-    "#лука":            "📅 Челлендж: Лука",
     "#история":         "🏛️ История и церковь",
     "#размышления":     "💬 Размышления и цитаты",
     "#цитата":          "💬 Размышления и цитаты",
@@ -96,8 +84,17 @@ HASHTAG_MAP = {
     "#анонс":           "📻 Анонсы канала",
     "#новости":         "📻 Анонсы канала",
 }
+
+# Второстепенные теги — только для поиска, без отдельной категории.
+# Бот автоматически добавляет сюда новые неизвестные теги.
+SECONDARY_TAGS = {
+    "#фильм", "#достоевский", "#солженицын", "#клайвльюис",
+    "#чехов", "#лесков", "#толстой", "#семинар", "#лука",
+}
+
+# #продолжение убран из IGNORE_TAGS — он должен сохраняться в tags для определения первых частей пар
 IGNORE_TAGS  = {"#отчтениякпреображению"}
-SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука"}
+SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука", "#цитата", "#продолжение"}
 
 # ── Карта книг Библии ─────────────────────────────────────────
 BOOK_NUM = {
@@ -126,6 +123,7 @@ BOOK_NUM = {
     "Евреям": 65, "Откровение": 66,
 }
 
+# Индексы соответствуют порядку книг в ru_synodal.json
 BOOK_JSON_INDEX = {
     "Бытие": 0, "Исход": 1, "Левит": 2, "Числа": 3, "Второзаконие": 4,
     "Иисус Навин": 5, "Судьи": 6, "Руфь": 7,
@@ -140,16 +138,17 @@ BOOK_JSON_INDEX = {
     "Наум": 33, "Аввакум": 34, "Софония": 35, "Аггей": 36,
     "Захария": 37, "Малахия": 38,
     "Матфей": 39, "Марк": 40, "Лука": 41, "Иоанн": 42, "Деяния": 43,
-    "Иакова": 44,
-    "1 Петра": 45, "2 Петра": 46,
-    "1 Иоанна": 47, "2 Иоанна": 48, "3 Иоанна": 49,
-    "Иуды": 50,
-    "Римлянам": 51,
-    "1 Коринфянам": 52, "2 Коринфянам": 53,
-    "Галатам": 54, "Ефесянам": 55, "Филиппийцам": 56, "Колоссянам": 57,
-    "1 Фессалоникийцам": 58, "2 Фессалоникийцам": 59,
-    "1 Тимофею": 60, "2 Тимофею": 61, "Титу": 62, "Филимону": 63,
-    "Евреям": 64, "Откровение": 65,
+    "Римлянам": 44,
+    "1 Коринфянам": 45, "2 Коринфянам": 46,
+    "Галатам": 47, "Ефесянам": 48, "Филиппийцам": 49, "Колоссянам": 50,
+    "1 Фессалоникийцам": 51, "2 Фессалоникийцам": 52,
+    "1 Тимофею": 53, "2 Тимофею": 54, "Титу": 55, "Филимону": 56,
+    "Евреям": 57,
+    "Иакова": 58,
+    "1 Петра": 59, "2 Петра": 60,
+    "1 Иоанна": 61, "2 Иоанна": 62, "3 Иоанна": 63,
+    "Иуды": 64,
+    "Откровение": 65,
 }
 
 BOOK_ALIASES = {
@@ -222,36 +221,32 @@ GROQ_PROMPT = """
 
 ━━━ ТВОЙ ПРОЦЕСС ━━━
 
-ШАГ 1 — ПОЙМИ АВТОРА
-Прочитай пост целиком. Определи:
-- Главную богословскую мысль которую развивает автор
-- Духовный опыт или вопрос стоящий за текстом
-- Интонацию: размышление, исповедь, учение, утешение, призыв
+ШАГ 1 — ПОЙМИ ГЛАВНУЮ МЫСЛЬ
+Прочитай пост целиком. В одном предложении сформулируй:
+- Что именно автор утверждает или исследует? (не тему вообще, а конкретный тезис)
+- Какой духовный вывод он делает или к которому ведёт?
+Держи эту формулировку перед собой на каждом следующем шаге.
 
 ШАГ 2 — ТЕКСТЫ АВТОРА (role="автора")
-Найди все тексты Писания которые автор явно цитирует или на которые опирается.
-Они идут ПЕРВЫМИ. Если автор не дал точную ссылку — найди сам по содержанию.
-Если автор не использует никаких текстов Писания — этот раздел пуст.
+Найди тексты Писания которые автор явно цитирует, называет или на которые прямо опирается.
+Если автор не даёт точную ссылку — установи её сам по содержанию.
+Если автор не использует Писание — этот раздел пуст.
 
 ШАГ 3 — ДОПОЛНИТЕЛЬНЫЕ ТЕКСТЫ (role="дополнительно")
-Добавь 2-3 отрывка которые углубляют именно мысль автора:
-- Один из другой части канона (ВЗ если автор в НЗ, и наоборот)
-- Один христологический — как мысль раскрывается через Христа
-- Один практический — что делать с этим знанием
+Добавь 1-2 отрывка которые точно углубляют ГЛАВНУЮ МЫСЛЬ из ШАГ 1.
+Каждый отрывок должен проходить проверку: «Если убрать этот текст — читатель потеряет важный угол зрения на тезис автора?» Если нет — не бери.
+Предпочитай отрывки 3-6 стихов, а не одиночные стихи.
 
-СТРОГО ЗАПРЕЩЕНО:
-- Подбирать стихи по ключевым словам или тегам — только по смыслу поста
-- Брать стихи вырванные из контекста
-- Использовать второканонические книги (Товит, Маккавеи, Премудрость и др.)
-- Выдумывать или искажать ссылки — только реально существующие стихи
-- Давать более 5 отрывков итого
+ЖЁСТКИЕ ЗАПРЕТЫ:
+- Не бери тексты которые связаны с темой поста лишь по ключевым словам — только по смыслу тезиса
+- Не бери тексты вырванные из контекста (например, псалмы покаяния — не про смирение в служении)
+- Не используй второканонические книги (Товит, Маккавеи, Премудрость и др.)
+- Не выдумывай и не искажай ссылки — только реально существующие стихи
+- Не давай более 4 отрывков итого
 
-Предпочитай отрывки (3-7 стихов) а не одиночные стихи.
-
-ШАГ 5 — ВОПРОС ДЛЯ РАЗМЫШЛЕНИЯ
-Сформулируй вопрос как продолжение мысли автора —
-как будто ты его собеседник который прочитал пост и задаёт следующий вопрос.
-Конкретный, личный, вытекающий из прочитанного — не общий по теме.
+ШАГ 4 — ВОПРОС ДЛЯ РАЗМЫШЛЕНИЯ
+Сформулируй один личный вопрос — как продолжение тезиса автора.
+Вопрос должен быть конкретным и вытекать из прочитанного, а не общим по теме.
 
 ━━━ ОТВЕТ ━━━
 
@@ -260,11 +255,11 @@ GROQ_PROMPT = """
   "bible_refs": [
     {{
       "ref": "Книга глава:стих — формат: 'Бытие 3:15' или 'Римлянам 8:18-25'. Никогда не пиши просто главу без стиха. Название в именительном падеже: Иоанн, Матфей, Лука, Римлянам, Псалтирь, 1 Коринфянам.",
-      "theme": "одно предложение — почему этот текст в контексте мысли автора",
+      "theme": "одно предложение — почему этот текст точно соответствует тезису автора",
       "role": "автора или дополнительно"
     }}
   ],
-  "reflection": "Личный вопрос продолжающий мысль автора"
+  "reflection": "Личный вопрос продолжающий тезис автора"
 }}
 """
 
@@ -357,6 +352,8 @@ def extract_hashtags(message: dict) -> list:
 
 
 def hashtags_to_topics(tags: list) -> list:
+    """Возвращает категории для оглавления. Неизвестные теги автоматически
+    добавляются в SECONDARY_TAGS — они доступны для поиска, но без категории."""
     topics, seen = [], set()
     for tag in tags:
         if tag in IGNORE_TAGS:
@@ -365,7 +362,16 @@ def hashtags_to_topics(tags: list) -> list:
         if cat and cat not in seen:
             topics.append(cat)
             seen.add(cat)
+        elif not cat and tag not in SECONDARY_TAGS and tag not in SKIP_AI_TAGS:
+            # Новый неизвестный тег — запоминаем как второстепенный
+            log.info(f"🆕 Новый тег: {tag} → добавлен в SECONDARY_TAGS")
+            SECONDARY_TAGS.add(tag)
     return topics
+
+
+def get_post_tags(tags: list) -> list:
+    """Все теги поста для поиска: основные + второстепенные (без служебных)."""
+    return [t for t in tags if t not in IGNORE_TAGS]
 
 
 def extract_title_and_preview(message: dict) -> tuple:
@@ -511,54 +517,56 @@ async def get_theology_db() -> list:
     return all_records
 
 
-async def find_theology_quotes(post_text: str, top_n: int = 3) -> list:
+async def find_theology_quotes(query: str, top_n: int = 3) -> list:
     if not COHERE_API_KEY:
         return []
     try:
         db = await get_theology_db()
         if not db:
             return []
-        by_author = defaultdict(list)
-        for rec in db:
-            by_author[rec["author"]].append(rec)
-        sample = []
-        per_author = min(400, 2000 // max(len(by_author), 1))
-        for author, recs in by_author.items():
-            selected = random.sample(recs, min(per_author, len(recs)))
-            sample.extend(selected)
-        random.shuffle(sample)
-        sample = sample[:2000]
+        # Берём все записи — не случайную выборку, чтобы не пропустить релевантное
+        sample = db[:]
         documents = [rec["text"][:400] for rec in sample]
         payload = {
             "model": "rerank-multilingual-v3.0",
-            "query": post_text[:1000],
+            "query": query[:1000],
             "documents": documents,
             "top_n": top_n,
             "return_documents": True,
         }
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(COHERE_RERANK, headers=_cohere_headers(), json=payload)
             r.raise_for_status()
             results = r.json().get("results", [])
         if not results:
             return []
         top_score = results[0]["relevance_score"]
-        if top_score < 0.12:
+        # Высокий порог: если лучшая цитата не очень близка — не показываем ничего
+        if top_score < 0.92:
+            log.info(f"Theology: top_score={top_score:.3f} < 0.92 — цитаты не релевантны, пропускаем")
             return []
-        threshold = max(0.08, top_score * 0.35)
+        # Берём только цитаты близкие к лучшей (не ниже 85% от топа)
+        threshold = top_score * 0.85
         quotes = []
+        seen_authors = set()
         for res in results:
             score = res["relevance_score"]
             if score < threshold:
                 break
             rec = sample[res["index"]]
+            # Не более одной цитаты от одного автора
+            if rec["author"] in seen_authors:
+                continue
+            seen_authors.add(rec["author"])
             quotes.append({
                 "author": rec["author"],
                 "title": rec.get("title", ""),
                 "text": rec["text"][:500],
                 "score": round(score, 3)
             })
-        log.info(f"Theology: {len(quotes)} quotes, top={top_score:.3f}")
+            if len(quotes) >= top_n:
+                break
+        log.info(f"Theology: {len(quotes)} quotes, top={top_score:.3f}, threshold={threshold:.3f}")
         return quotes
     except Exception as e:
         log.error(f"Theology search error: {e}")
@@ -641,25 +649,31 @@ async def analyze_post(post_text: str, topics: list):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
     }
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
+    # Retry при 429 (rate limit Groq): ждём до 65 сек и пробуем ещё раз
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
+        if r.status_code == 429:
+            wait = 65 if attempt == 0 else 120
+            log.warning(f"Groq 429 rate limit, attempt {attempt+1}/3, ждём {wait}s...")
+            await asyncio.sleep(wait)
+            continue
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
         text = text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         return json.loads(text)
+    raise Exception("Groq rate limit: все 3 попытки исчерпаны")
 
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
+    # t.me/bot/deeper?startapp=POST_ID — официальный Telegram Mini App deeplink.
+    # Telegram открывает deeper.html как Mini App внутри себя (не браузер).
+    # post_id передаётся в initDataUnsafe.start_param → deeper.html его читает.
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
-    chan_user = CHANNEL_ID.lstrip("@")
-    comments_url = f"https://t.me/{chan_user}/{post_id}?comment=1"
-    # Две кнопки в одной строке: «Глубже» + «Комментарии»
-    keyboard = {"inline_keyboard": [[
-        {"text": "📚 Глубже", "url": miniapp_url},
-        {"text": "💬 Комментарии", "url": comments_url}
-    ]]}
+    btn = {"text": "📚 Глубже", "url": miniapp_url}
+    keyboard = {"inline_keyboard": [[btn]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             f"{TELEGRAM_API}/editMessageReplyMarkup",
@@ -668,21 +682,8 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
         result = r.json()
         if result.get("ok"):
             log.info(f"✅ Кнопка «Глубже» добавлена к посту {post_id}")
-            return
-        log.warning(f"edit failed: {result.get('description')} — пробуем sendMessage")
-        r2 = await client.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={
-                "chat_id": CHANNEL_ID,
-                "text": "📚 Библейский контекст и связи этого поста",
-                "reply_to_message_id": post_id,
-                "reply_markup": keyboard
-            }
-        )
-        if r2.json().get("ok"):
-            log.info(f"✅ Кнопка отправлена отдельным сообщением к {post_id}")
         else:
-            log.error(f"❌ Ошибка кнопки для {post_id}: {r2.json().get('description')}")
+            log.error(f"❌ Ошибка кнопки для {post_id}: {result.get('description')}")
 
 
 # ── Обработка поста AI ────────────────────────────────────────
@@ -698,6 +699,23 @@ async def process_post(post: dict):
     if not topics:
         log.info(f"process_post {post_id}: нет тем — пропускаем")
         return
+
+    # Склейка с предыдущим постом если он помечен #продолжение
+    # (текущий пост — вторая и финальная часть)
+    prev_id = post_id - 1
+    async with httpx.AsyncClient(timeout=15) as _cl:
+        _posts_check, _ = await github_get(_cl, GITHUB_FILE)
+    if _posts_check:
+        _prev = next((p for p in _posts_check.get("posts", []) if p["id"] == prev_id), None)
+        if _prev:
+            _prev_text = _prev.get("text", "") or _prev.get("preview", "")
+            _is_cont = (
+                "Продолжение ниже" in _prev_text
+                or "продолжение ниже" in _prev_text
+            )
+            if _is_cont and _prev_text:
+                text = (_prev_text.rstrip() + "\n\n" + text)[:6000]
+                log.info(f"📎 Пост {post_id} склеен с {prev_id} (суммарно {len(text)} симв.)")
 
     # Юмор: без Groq/Cohere
     if "😄 Юмор" in topics:
@@ -738,11 +756,17 @@ async def process_post(post: dict):
     try:
         related_task = (find_related_by_embedding(post_id, embedding, posts_data)
                         if embedding else asyncio.sleep(0))
-        result, related, theology_quotes = await asyncio.gather(
-            analyze_post(text, topics), related_task, find_theology_quotes(text)
+        # Groq анализ идёт первым — нам нужен reflection как точный запрос для Rerank
+        result, related = await asyncio.gather(
+            analyze_post(text, topics), related_task
         )
         if not embedding:
             related = []
+        # Используем reflection (тезис автора) как запрос для богословской базы —
+        # это точнее чем сырой текст поста
+        theology_query = result.get("reflection") or text[:500]
+        theology_query = f"{theology_query}\n\n{text[:500]}"
+        theology_quotes = await find_theology_quotes(theology_query)
     except Exception as e:
         log.error(f"AI error for post {post_id}: {e}")
         return
@@ -793,10 +817,12 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
     date_raw   = message.get("date", 0)
     date_str   = datetime.fromtimestamp(date_raw, tz=timezone.utc).strftime("%Y-%m-%d")
     chan_user   = (message.get("chat") or {}).get("username") or CHANNEL_ID.lstrip("@")
+    # tags — все теги поста (основные + второстепенные), для поиска в оглавлении
+    all_tags = get_post_tags(tags)
     new_post = {
         "id": msg_id, "date": date_str, "title": title,
         "preview": preview, "url": f"https://t.me/{chan_user}/{msg_id}",
-        "topics": topics, "text": text_full,
+        "topics": topics, "tags": all_tags, "text": text_full,
     }
 
     async with _github_lock:
@@ -986,249 +1012,6 @@ async def handle_user_message(message: dict):
 # ЭНДПОИНТЫ
 # ═══════════════════════════════════════════════════
 
-
-
-# ═══════════════════════════════════════════════════
-# ── ПЛАН ЧТЕНИЯ БИБЛИИ ─────────────────────────────
-# ═══════════════════════════════════════════════════
-
-def _sb_headers():
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
-
-async def sb_get(path: str, params: dict = None):
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(url, headers=_sb_headers(), params=params)
-        r.raise_for_status()
-        return r.json()
-
-async def sb_post(path: str, data: dict):
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(url, headers=_sb_headers(), json=data)
-        r.raise_for_status()
-        return r.json()
-
-async def sb_patch(path: str, params: dict, data: dict):
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.patch(url, headers=_sb_headers(), params=params, json=data)
-        r.raise_for_status()
-        return r.json()
-
-async def sb_upsert(path: str, data: dict):
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    headers = {**_sb_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(url, headers=headers, json=data)
-        r.raise_for_status()
-        return r.json()
-
-def _today_msk() -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%Y-%m-%d")
-
-def _current_hour_msk() -> int:
-    return (datetime.now(timezone.utc) + timedelta(hours=3)).hour
-
-async def get_plan_user(user_id: int):
-    rows = await sb_get("users", {"user_id": f"eq.{user_id}", "select": "*"})
-    return rows[0] if rows else None
-
-async def update_streak(user_id: int, user: dict) -> dict:
-    today = _today_msk()
-    yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-    last = user.get("last_read")
-    streak = user.get("streak", 0)
-    max_streak = user.get("max_streak", 0)
-    had_comeback = user.get("had_comeback", False)
-    if last == today:
-        return user
-    if last == yesterday:
-        streak += 1
-    elif last and last < yesterday:
-        had_comeback = True
-        streak = 1
-    else:
-        streak = 1
-    max_streak = max(max_streak, streak)
-    updated = await sb_patch("users", {"user_id": f"eq.{user_id}"}, {
-        "streak": streak, "max_streak": max_streak,
-        "last_read": today, "had_comeback": had_comeback
-    })
-    return updated[0] if updated else {**user, "streak": streak,
-        "max_streak": max_streak, "last_read": today, "had_comeback": had_comeback}
-
-PLAN_ACHIEVEMENTS = [
-    {"id": "first_step",    "check": lambda u, p: p >= 1},
-    {"id": "fire_7",        "check": lambda u, p: u.get("streak", 0) >= 7},
-    {"id": "half_month",    "check": lambda u, p: u.get("streak", 0) >= 15},
-    {"id": "month",         "check": lambda u, p: u.get("streak", 0) >= 30},
-    {"id": "two_months",    "check": lambda u, p: u.get("streak", 0) >= 60},
-    {"id": "iron_will",     "check": lambda u, p: u.get("streak", 0) >= 90},
-    {"id": "chapters_50",   "check": lambda u, p: p >= 50},
-    {"id": "chapters_100",  "check": lambda u, p: p >= 100},
-    {"id": "comeback",      "check": lambda u, p: u.get("had_comeback", False)},
-]
-
-async def check_achievements(user_id: int, user: dict, days_done: int) -> list:
-    existing = await sb_get("achievements", {"user_id": f"eq.{user_id}", "select": "badge_id"})
-    existing_ids = {a["badge_id"] for a in existing}
-    new_badges = []
-    for ach in PLAN_ACHIEVEMENTS:
-        if ach["id"] in existing_ids:
-            continue
-        if ach["check"](user, days_done):
-            try:
-                await sb_post("achievements", {"user_id": user_id, "badge_id": ach["id"]})
-                new_badges.append(ach["id"])
-                log.info(f"🏆 {user_id} получил: {ach['id']}")
-            except Exception as e:
-                log.error(f"Achievement error: {e}")
-    return new_badges
-
-async def send_plan_notification(user_id: int, user: dict):
-    plan_id = user.get("plan_id", "")
-    start_date = user.get("start_date", _today_msk())
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    today_dt = datetime.strptime(_today_msk(), "%Y-%m-%d")
-    day_num = (today_dt - start).days + 1
-    streak = user.get("streak", 0)
-    plan_names = {"nt_90": "Новый Завет за 90 дней", "mark_16": "Марк за 16 дней",
-                  "psalms_30": "Псалтирь за месяц", "bible_year": "Библия за год"}
-    plan_totals = {"nt_90": 90, "mark_16": 16, "psalms_30": 30, "bible_year": 365}
-    plan_name = plan_names.get(plan_id, plan_id)
-    total = plan_totals.get(plan_id, 90)
-    pct = min(int((day_num - 1) / total * 10), 10)
-    bar = "▓" * pct + "░" * (10 - pct)
-    streak_line = ("🔥 Стрик: " + str(streak) + " дней подряд") if streak > 1 else "📖 Начинаем!"
-    text = (
-        "📅 *День " + str(day_num) + "* — " + plan_name + "\n\n" +
-        streak_line + "\n" +
-        "Прогресс: " + str(int((day_num - 1) / total * 100)) + "% " + bar + "\n\n" +
-        "Открой план чтения ниже 👇"
-    )
-    bot_username = BOT_USERNAME.lstrip("@")
-    deep_link = f"https://t.me/{bot_username}/plan"
-    keyboard = {"inline_keyboard": [[
-        {"text": "📖 Читать сейчас", "url": deep_link},
-        {"text": "✓ Уже прочитал", "callback_data": f"plan_read_{day_num}"}
-    ]]}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{TELEGRAM_API}/sendMessage", json={
-                "chat_id": user_id, "text": text,
-                "parse_mode": "Markdown", "reply_markup": keyboard
-            })
-        log.info(f"📬 Уведомление → {user_id} (день {day_num})")
-    except Exception as e:
-        log.error(f"Notification error {user_id}: {e}")
-
-scheduler = AsyncIOScheduler(timezone="UTC")
-
-@scheduler.scheduled_job("cron", minute=0)
-async def send_scheduled_notifications():
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return
-    hour_msk = _current_hour_msk()
-    try:
-        users = await sb_get("users",
-            {"notify_hour": f"eq.{hour_msk}", "notify_on": "eq.true", "select": "*"})
-        log.info(f"⏰ Уведомления {hour_msk}:00 МСК — юзеров: {len(users)}")
-        for u in users:
-            if u.get("last_read") == _today_msk():
-                continue
-            await send_plan_notification(u["user_id"], u)
-    except Exception as e:
-        log.error(f"Scheduler error: {e}")
-
-@app.on_event("startup")
-async def startup_event():
-    if SUPABASE_URL and SUPABASE_KEY:
-        scheduler.start()
-        log.info("✅ Планировщик запущен")
-    else:
-        log.warning("⚠️ SUPABASE не настроен")
-
-class PlanRegisterRequest(BaseModel):
-    user_id: int
-    plan_id: str
-    notify_hour: int = 8
-    notify_on: bool = True
-
-class PlanReadRequest(BaseModel):
-    user_id: int
-    day_number: int
-
-class PlanSettingsRequest(BaseModel):
-    user_id: int
-    notify_hour: int | None = None
-    notify_on: bool | None = None
-
-@app.post("/plan/register")
-async def plan_register(req: PlanRegisterRequest):
-    if not SUPABASE_URL:
-        raise HTTPException(503, "Supabase not configured")
-    today = _today_msk()
-    data = {"user_id": req.user_id, "plan_id": req.plan_id, "start_date": today,
-            "notify_hour": max(0, min(23, req.notify_hour)), "notify_on": req.notify_on,
-            "streak": 0, "max_streak": 0, "last_read": None, "had_comeback": False}
-    result = await sb_upsert("users", data)
-    user = result[0] if result else data
-    log.info(f"✅ Юзер {req.user_id} → план {req.plan_id}")
-    return {"ok": True, "user": user}
-
-@app.get("/plan/status")
-async def plan_status(user_id: int):
-    if not SUPABASE_URL:
-        raise HTTPException(503, "Supabase not configured")
-    user = await get_plan_user(user_id)
-    return {"user": user}
-
-@app.post("/plan/read")
-async def plan_read(req: PlanReadRequest):
-    if not SUPABASE_URL:
-        raise HTTPException(503, "Supabase not configured")
-    user = await get_plan_user(req.user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-    try:
-        await sb_post("progress", {"user_id": req.user_id, "day_number": req.day_number})
-    except Exception:
-        pass
-    user = await update_streak(req.user_id, user)
-    prog = await sb_get("progress", {"user_id": f"eq.{req.user_id}", "select": "day_number"})
-    days_done = len(prog)
-    new_badges = await check_achievements(req.user_id, user, days_done)
-    log.info(f"✅ {req.user_id} день {req.day_number} стрик={user.get('streak')}")
-    return {"ok": True, "user": user, "new_achievements": new_badges}
-
-@app.get("/plan/achievements")
-async def plan_achievements(user_id: int):
-    if not SUPABASE_URL:
-        raise HTTPException(503, "Supabase not configured")
-    ach = await sb_get("achievements",
-        {"user_id": f"eq.{user_id}", "select": "*", "order": "unlocked_at.asc"})
-    return {"achievements": ach}
-
-@app.post("/plan/settings")
-async def plan_settings_update(req: PlanSettingsRequest):
-    if not SUPABASE_URL:
-        raise HTTPException(503, "Supabase not configured")
-    upd = {}
-    if req.notify_hour is not None:
-        upd["notify_hour"] = max(0, min(23, req.notify_hour))
-    if req.notify_on is not None:
-        upd["notify_on"] = req.notify_on
-    if not upd:
-        return {"ok": True}
-    result = await sb_patch("users", {"user_id": f"eq.{req.user_id}"}, upd)
-    return {"ok": True, "user": result[0] if result else None}
-
 @app.head("/")
 async def root_head():
     return Response(status_code=200)
@@ -1370,6 +1153,57 @@ async def manual_analyze(post_id: int):
     return {"ok": True, "message": f"Analysis started for post {post_id}", "text_len": len(text)}
 
 
+@app.get("/analyze_range")
+async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_existing: bool = False):
+    """Анализирует посты в диапазоне ID (включительно). 
+    Пример: /analyze_range?from_id=220&to_id=290&delay=20"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data:
+        return {"error": "posts.json not found"}
+
+    all_posts = sorted(posts_data.get("posts", []), key=lambda p: p["id"])
+    to_analyze = [p for p in all_posts if from_id <= p["id"] <= to_id]
+    if skip_existing:
+        to_analyze = [p for p in to_analyze if str(p["id"]) not in (links_data or {})]
+
+    log.info(f"analyze_range {from_id}-{to_id}: {len(to_analyze)} постов, delay={delay}s")
+
+    async def _run():
+        done = 0
+        for post in to_analyze:
+            pid = post["id"]
+            post_tags = post.get("tags") or extract_tags_from_text(
+                post.get("text","") or post.get("preview",""))
+            if "#продолжение" in post_tags:
+                log.info(f"analyze_range: пост {pid} — #продолжение, пропускаем")
+                done += 1
+                continue
+            if not should_process_ai(post_tags):
+                log.info(f"analyze_range: пост {pid} — нет AI-тегов, пропускаем")
+                done += 1
+                continue
+            try:
+                await process_post({
+                    "message_id": pid,
+                    "text": post.get("text") or post.get("preview") or post.get("title") or "",
+                    "topics": post.get("topics", []),
+                    "tags": post_tags,
+                    "date": 0,
+                    "chat": {"username": CHANNEL_ID.lstrip("@")}
+                })
+                done += 1
+                log.info(f"analyze_range: [{done}/{len(to_analyze)}] пост {pid} готов")
+            except Exception as e:
+                log.error(f"analyze_range: пост {pid} ошибка: {e}")
+            await asyncio.sleep(delay)
+        log.info(f"analyze_range {from_id}-{to_id}: завершено {done}/{len(to_analyze)}")
+
+    asyncio.create_task(_run())
+    return {"ok": True, "range": f"{from_id}-{to_id}", "queued": len(to_analyze), "delay_seconds": delay}
+
+
 @app.get("/analyze_all")
 async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
     """
@@ -1408,18 +1242,35 @@ async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
     async def _run():
         done = 0
         for post in to_analyze:
+            pid = post["id"]
+            # Восстанавливаем теги из текста если поле tags отсутствует
+            post_tags = post.get("tags") or extract_tags_from_text(
+                post.get("text","") or post.get("preview",""))
+            # Пропускаем первые части спаренных постов
+            if "#продолжение" in post_tags:
+                log.info(f"analyze_all: пост {pid} — #продолжение, пропускаем")
+                done += 1
+                await asyncio.sleep(0.5)
+                continue
+            # Пропускаем посты без AI-тегов (анонсы, чистые цитаты и т.д.)
+            if not should_process_ai(post_tags):
+                log.info(f"analyze_all: пост {pid} — нет AI-тегов, пропускаем")
+                done += 1
+                await asyncio.sleep(0.5)
+                continue
             try:
                 await process_post({
-                    "message_id": post["id"],
+                    "message_id": pid,
                     "text": post.get("text") or post.get("preview") or post.get("title") or "",
                     "topics": post.get("topics", []),
+                    "tags": post_tags,
                     "date": 0,
                     "chat": {"username": CHANNEL_ID.lstrip("@")}
                 })
                 done += 1
-                log.info(f"analyze_all: [{done}/{len(to_analyze)}] пост {post['id']} готов")
+                log.info(f"analyze_all: [{done}/{len(to_analyze)}] пост {pid} готов")
             except Exception as e:
-                log.error(f"analyze_all: пост {post['id']} ошибка: {e}")
+                log.error(f"analyze_all: пост {pid} ошибка: {e}")
             await asyncio.sleep(delay)
         log.info(f"analyze_all: завершено {done}/{len(to_analyze)}")
 
@@ -1454,6 +1305,211 @@ async def reindex_all():
             await github_put(client, GITHUB_FILE, posts_data, sha,
                              f"reindex: added {updated} embeddings")
     return {"ok": True, "updated": updated, "total": len(posts_data.get("posts", []))}
+
+
+def extract_tags_from_text(text: str) -> list:
+    """Восстанавливает хэштеги из сохранённого текста поста.
+    Используется для старых постов без поля tags."""
+    import re
+    return [m.lower() for m in re.findall(r'#\w+', text)]
+
+
+@app.get("/reindex_all")
+async def reindex_all_posts():
+    """Пересобирает posts.json: обновляет topics и tags для каждого поста.
+    Для постов без тегов в тексте — подтягивает оригинал из Telegram API.
+    Запускать после изменения HASHTAG_MAP."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, sha = await github_get(client, GITHUB_FILE)
+    if not posts_data:
+        return {"error": "posts.json not found"}
+
+    posts = posts_data.get("posts", [])
+    updated = 0
+    skipped = 0
+    fetched_from_tg = 0
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for post in posts:
+            # 1. Берём теги из поля tags или восстанавливаем из сохранённого текста
+            raw_tags = post.get("tags")
+            if not raw_tags:
+                text = post.get("text", "") or post.get("preview", "")
+                raw_tags = extract_tags_from_text(text)
+
+            # 2. Если тегов нет в тексте — теги в конце текста были обрезаны.
+            # Bot API не позволяет читать старые посты канала без пересылки.
+            # Такие посты помечаем для ручной проверки.
+            if not raw_tags:
+                log.warning(f"reindex_all: пост {post['id']} — теги не найдены в тексте, пропускаем")
+
+            if not raw_tags:
+                skipped += 1
+                continue
+
+            new_topics = hashtags_to_topics(raw_tags)
+            new_tags   = get_post_tags(raw_tags)
+
+            if not new_topics:
+                skipped += 1
+                continue
+
+            changed = (new_topics != post.get("topics") or new_tags != post.get("tags"))
+            post["topics"] = new_topics
+            post["tags"]   = new_tags
+            if changed:
+                updated += 1
+
+    posts_data["topics"] = recalc_topics(posts)
+    posts_data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        _, fresh_sha = await github_get(client, GITHUB_FILE)
+        await github_put(client, GITHUB_FILE, posts_data, fresh_sha,
+                         f"reindex_all: updated {updated} posts")
+    log.info(f"reindex_all: обновлено {updated}, из TG: {fetched_from_tg}, пропущено {skipped} из {len(posts)}")
+    return {"ok": True, "updated": updated, "fetched_from_telegram": fetched_from_tg,
+            "skipped": skipped, "total": len(posts)}
+
+
+@app.get("/remove_button/{post_id}")
+async def remove_button(post_id: int):
+    """Удаляет inline-кнопку с поста канала (ставит пустую клавиатуру)."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{TELEGRAM_API}/editMessageReplyMarkup",
+            json={"chat_id": CHANNEL_ID, "message_id": post_id,
+                  "reply_markup": {"inline_keyboard": []}}
+        )
+    result = r.json()
+    if result.get("ok"):
+        log.info(f"✅ Кнопка удалена с поста {post_id}")
+        return {"ok": True, "post_id": post_id}
+    else:
+        log.error(f"❌ Ошибка удаления кнопки {post_id}: {result.get('description')}")
+        return {"ok": False, "error": result.get("description")}
+
+
+@app.get("/cleanup")
+async def cleanup(delay: float = 1.0):
+    """Чистит лишние кнопки и links.json:
+    - Удаляет кнопки с постов #продолжение (первые части пар)
+    - Удаляет кнопки с постов без AI-тегов (#цитата, #анонс и т.д.)
+    - Удаляет записи таких постов из links.json
+    Запускай после analyze_all."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data or not links_data:
+        return {"error": "posts.json or links.json not found"}
+
+    removed_buttons = []
+    removed_links = []
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        for post in posts_data.get("posts", []):
+            pid = post["id"]
+            post_tags = post.get("tags") or extract_tags_from_text(
+                post.get("text","") or post.get("preview",""))
+
+            should_have_button = (
+                should_process_ai(post_tags)
+                and "#продолжение" not in post_tags
+                and str(pid) in links_data
+            )
+
+            if not should_have_button:
+                # Удаляем кнопку
+                r = await client.post(
+                    f"{TELEGRAM_API}/editMessageReplyMarkup",
+                    json={"chat_id": CHANNEL_ID, "message_id": pid,
+                          "reply_markup": {"inline_keyboard": []}}
+                )
+                if r.json().get("ok"):
+                    removed_buttons.append(pid)
+                    log.info(f"🗑 Кнопка удалена с поста {pid}")
+                # Удаляем из links.json
+                if str(pid) in links_data:
+                    del links_data[str(pid)]
+                    removed_links.append(pid)
+                await asyncio.sleep(delay)
+
+    if removed_links:
+        async with httpx.AsyncClient(timeout=30) as client:
+            _, fresh_sha = await github_get(client, GITHUB_LINKS_FILE)
+            await github_put(client, GITHUB_LINKS_FILE, links_data, fresh_sha,
+                             f"cleanup: removed {len(removed_links)} entries")
+
+    log.info(f"cleanup: кнопки удалены {removed_buttons}, links удалены {removed_links}")
+    return {"ok": True, "removed_buttons": removed_buttons, "removed_links": removed_links}
+
+
+@app.get("/update_buttons")
+async def update_buttons(delay: float = 1.5):
+    """Обновляет кнопки «Глубже» на всех постах у которых есть links.json запись.
+    Не запускает AI — только переставляет кнопки с актуальным URL."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data or not links_data:
+        return {"error": "posts.json or links.json not found"}
+
+    bot_username = BOT_USERNAME.lstrip("@")
+    posts = posts_data.get("posts", [])
+    queued = []
+
+    for post in posts:
+        pid = post["id"]
+        post_tags = post.get("tags") or extract_tags_from_text(
+            post.get("text","") or post.get("preview",""))
+        # Только посты с AI-анализом и правильными тегами
+        if str(pid) not in links_data:
+            continue
+        if not should_process_ai(post_tags) or "#продолжение" in post_tags:
+            continue
+        queued.append(pid)
+
+    async def _run():
+        done = 0
+        async with httpx.AsyncClient(timeout=10) as client:
+            for pid in queued:
+                miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={pid}"
+                btn = {"text": "📚 Глубже", "url": miniapp_url}
+                keyboard = {"inline_keyboard": [[btn]]}
+                r = await client.post(
+                    f"{TELEGRAM_API}/editMessageReplyMarkup",
+                    json={"chat_id": CHANNEL_ID, "message_id": pid,
+                          "reply_markup": keyboard}
+                )
+                result = r.json()
+                if result.get("ok"):
+                    log.info(f"✅ Кнопка обновлена: пост {pid}")
+                else:
+                    desc = result.get("description","")
+                    if "not modified" in desc:
+                        log.info(f"⏭ Пост {pid} — кнопка уже актуальна")
+                    elif "Too Many Requests" in desc:
+                        wait = result.get("parameters", {}).get("retry_after", 30)
+                        log.warning(f"⏳ Telegram 429 для поста {pid}, ждём {wait}s...")
+                        await asyncio.sleep(wait + 1)
+                        # Повторная попытка
+                        r2 = await client.post(
+                            f"{TELEGRAM_API}/editMessageReplyMarkup",
+                            json={"chat_id": CHANNEL_ID, "message_id": pid,
+                                  "reply_markup": keyboard}
+                        )
+                        if r2.json().get("ok"):
+                            log.info(f"✅ Кнопка обновлена (retry): пост {pid}")
+                        else:
+                            log.error(f"❌ Пост {pid}: {r2.json().get('description')}")
+                    else:
+                        log.error(f"❌ Пост {pid}: {desc}")
+                done += 1
+                await asyncio.sleep(delay)
+        log.info(f"update_buttons: обновлено {done} постов")
+
+    asyncio.create_task(_run())
+    return {"ok": True, "queued": len(queued), "delay_seconds": delay}
 
 
 @app.get("/bulk_deeper")
