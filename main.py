@@ -672,8 +672,7 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
     # post_id передаётся в initDataUnsafe.start_param → deeper.html его читает.
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
-    chan_user = CHANNEL_ID.lstrip("@")
-    comments_url = f"https://t.me/{chan_user}/{post_id}?comment=1"
+    comments_url = f"https://t.me/Chtenie_Preobrazenie_chat/{post_id}"
     keyboard = {"inline_keyboard": [[
         {"text": "📚 Глубже", "url": miniapp_url},
         {"text": "💬 Комментарии", "url": comments_url}
@@ -1546,7 +1545,7 @@ async def update_buttons(delay: float = 1.5):
         async with httpx.AsyncClient(timeout=10) as client:
             for pid in queued:
                 miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={pid}"
-                comments_url = f"https://t.me/{chan_user}/{pid}?comment=1"
+                comments_url = f"https://t.me/Chtenie_Preobrazenie_chat/{pid}"
                 keyboard = {"inline_keyboard": [[
                     {"text": "📚 Глубже", "url": miniapp_url},
                     {"text": "💬 Комментарии", "url": comments_url}
