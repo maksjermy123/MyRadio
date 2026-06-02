@@ -672,8 +672,12 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
     # post_id передаётся в initDataUnsafe.start_param → deeper.html его читает.
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
-    btn = {"text": "📚 Глубже", "url": miniapp_url}
-    keyboard = {"inline_keyboard": [[btn]]}
+    chan_user = CHANNEL_ID.lstrip("@")
+    comments_url = f"https://t.me/{chan_user}/{post_id}?comment=1"
+    keyboard = {"inline_keyboard": [[
+        {"text": "📚 Глубже", "url": miniapp_url},
+        {"text": "💬 Комментарии", "url": comments_url}
+    ]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             f"{TELEGRAM_API}/editMessageReplyMarkup",
@@ -1502,6 +1506,74 @@ async def update_buttons(delay: float = 1.5):
                             log.info(f"✅ Кнопка обновлена (retry): пост {pid}")
                         else:
                             log.error(f"❌ Пост {pid}: {r2.json().get('description')}")
+                    else:
+                        log.error(f"❌ Пост {pid}: {desc}")
+                done += 1
+                await asyncio.sleep(delay)
+        log.info(f"update_buttons: обновлено {done} постов")
+
+    asyncio.create_task(_run())
+    return {"ok": True, "queued": len(queued), "delay_seconds": delay}
+
+
+@app.get("/update_buttons")
+async def update_buttons(delay: float = 1.5):
+    """Обновляет кнопки «Глубже» + «Комментарии» на всех постах у которых есть links.json.
+    Не запускает AI — только переставляет кнопки с актуальным URL."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        posts_data, _ = await github_get(client, GITHUB_FILE)
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not posts_data or not links_data:
+        return {"error": "posts.json or links.json not found"}
+
+    bot_username = BOT_USERNAME.lstrip("@")
+    chan_user = CHANNEL_ID.lstrip("@")
+    posts = posts_data.get("posts", [])
+    queued = []
+
+    for post in posts:
+        pid = post["id"]
+        post_tags = post.get("tags") or extract_tags_from_text(
+            post.get("text","") or post.get("preview",""))
+        if str(pid) not in links_data:
+            continue
+        if not should_process_ai(post_tags) or "#продолжение" in post_tags:
+            continue
+        queued.append(pid)
+
+    async def _run():
+        done = 0
+        async with httpx.AsyncClient(timeout=10) as client:
+            for pid in queued:
+                miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={pid}"
+                comments_url = f"https://t.me/{chan_user}/{pid}?comment=1"
+                keyboard = {"inline_keyboard": [[
+                    {"text": "📚 Глубже", "url": miniapp_url},
+                    {"text": "💬 Комментарии", "url": comments_url}
+                ]]}
+                r = await client.post(
+                    f"{TELEGRAM_API}/editMessageReplyMarkup",
+                    json={"chat_id": CHANNEL_ID, "message_id": pid,
+                          "reply_markup": keyboard}
+                )
+                result = r.json()
+                if result.get("ok"):
+                    log.info(f"✅ Кнопки обновлены: пост {pid}")
+                else:
+                    desc = result.get("description","")
+                    if "not modified" in desc:
+                        log.info(f"⏭ Пост {pid} — кнопки уже актуальны")
+                    elif "Too Many Requests" in desc:
+                        wait = result.get("parameters", {}).get("retry_after", 30)
+                        log.warning(f"⏳ Telegram 429 для поста {pid}, ждём {wait}s...")
+                        await asyncio.sleep(wait + 1)
+                        r2 = await client.post(
+                            f"{TELEGRAM_API}/editMessageReplyMarkup",
+                            json={"chat_id": CHANNEL_ID, "message_id": pid,
+                                  "reply_markup": keyboard}
+                        )
+                        if r2.json().get("ok"):
+                            log.info(f"✅ Кнопки обновлены (retry): пост {pid}")
                     else:
                         log.error(f"❌ Пост {pid}: {desc}")
                 done += 1
