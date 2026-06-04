@@ -42,6 +42,7 @@ app.add_middleware(
 # ── Конфигурация ──────────────────────────────────────────────
 BOT_TOKEN                 = os.environ.get("BOT_TOKEN", "")
 CHANNEL_ID                = os.environ.get("CHANNEL_ID", "@Chtenie_Preobrazenie")
+DISCUSSION_CHAT_ID        = -1002557846325  # linked чат для комментариев
 INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
 GITHUB_TOKEN              = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO               = os.environ.get("GITHUB_REPO", "maksjermy123/MyRadio")
@@ -667,23 +668,30 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    # t.me/bot/deeper?startapp=POST_ID — официальный Telegram Mini App deeplink.
-    # Telegram открывает deeper.html как Mini App внутри себя (не браузер).
-    # post_id передаётся в initDataUnsafe.start_param → deeper.html его читает.
+    """Отправляет кнопку «Глубже» первым комментарием в тред поста.
+    Родная кнопка «Комментировать» в канале остаётся нетронутой.
+    Пользователь видит кнопку только когда заходит в комментарии к посту."""
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
-    btn = {"text": "📚 Глубже", "url": miniapp_url}
-    keyboard = {"inline_keyboard": [[btn]]}
+    keyboard = {"inline_keyboard": [[
+        {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
+    ]]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
-            f"{TELEGRAM_API}/editMessageReplyMarkup",
-            json={"chat_id": CHANNEL_ID, "message_id": post_id, "reply_markup": keyboard}
+            f"{TELEGRAM_API}/sendMessage",
+            json={
+                "chat_id": DISCUSSION_CHAT_ID,
+                "text": "📚 Библейский контекст и связи этого поста",
+                "reply_to_message_id": post_id,
+                "reply_markup": keyboard,
+                "disable_notification": True
+            }
         )
         result = r.json()
         if result.get("ok"):
-            log.info(f"✅ Кнопка «Глубже» добавлена к посту {post_id}")
+            log.info(f"✅ Кнопка «Глубже» отправлена комментарием к посту {post_id}")
         else:
-            log.error(f"❌ Ошибка кнопки для {post_id}: {result.get('description')}")
+            log.error(f"❌ Ошибка для поста {post_id}: {result.get('description')}")
 
 
 # ── Обработка поста AI ────────────────────────────────────────
@@ -1474,39 +1482,47 @@ async def update_buttons(delay: float = 1.5):
         async with httpx.AsyncClient(timeout=10) as client:
             for pid in queued:
                 miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={pid}"
-                btn = {"text": "📚 Глубже", "url": miniapp_url}
-                keyboard = {"inline_keyboard": [[btn]]}
+                keyboard = {"inline_keyboard": [[
+                    {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
+                ]]}
                 r = await client.post(
-                    f"{TELEGRAM_API}/editMessageReplyMarkup",
-                    json={"chat_id": CHANNEL_ID, "message_id": pid,
-                          "reply_markup": keyboard}
+                    f"{TELEGRAM_API}/sendMessage",
+                    json={
+                        "chat_id": DISCUSSION_CHAT_ID,
+                        "text": "📚 Библейский контекст и связи этого поста",
+                        "reply_to_message_id": pid,
+                        "reply_markup": keyboard,
+                        "disable_notification": True
+                    }
                 )
                 result = r.json()
                 if result.get("ok"):
-                    log.info(f"✅ Кнопка обновлена: пост {pid}")
+                    log.info(f"✅ Кнопка «Глубже» добавлена комментарием к посту {pid}")
                 else:
                     desc = result.get("description","")
-                    if "not modified" in desc:
-                        log.info(f"⏭ Пост {pid} — кнопка уже актуальна")
-                    elif "Too Many Requests" in desc:
-                        wait = result.get("parameters", {}).get("retry_after", 30)
-                        log.warning(f"⏳ Telegram 429 для поста {pid}, ждём {wait}s...")
-                        await asyncio.sleep(wait + 1)
-                        # Повторная попытка
+                    if "Too Many Requests" in desc:
+                        wait = 30
+                        log.warning(f"⏳ 429 для поста {pid}, ждём {wait}s...")
+                        await asyncio.sleep(wait)
                         r2 = await client.post(
-                            f"{TELEGRAM_API}/editMessageReplyMarkup",
-                            json={"chat_id": CHANNEL_ID, "message_id": pid,
-                                  "reply_markup": keyboard}
+                            f"{TELEGRAM_API}/sendMessage",
+                            json={
+                                "chat_id": DISCUSSION_CHAT_ID,
+                                "text": "📚 Библейский контекст и связи этого поста",
+                                "reply_to_message_id": pid,
+                                "reply_markup": keyboard,
+                                "disable_notification": True
+                            }
                         )
                         if r2.json().get("ok"):
-                            log.info(f"✅ Кнопка обновлена (retry): пост {pid}")
+                            log.info(f"✅ Кнопка добавлена (retry): пост {pid}")
                         else:
                             log.error(f"❌ Пост {pid}: {r2.json().get('description')}")
                     else:
                         log.error(f"❌ Пост {pid}: {desc}")
                 done += 1
                 await asyncio.sleep(delay)
-        log.info(f"update_buttons: обновлено {done} постов")
+        log.info(f"update_buttons: добавлено комментариев {done} постам")
 
     asyncio.create_task(_run())
     return {"ok": True, "queued": len(queued), "delay_seconds": delay}
