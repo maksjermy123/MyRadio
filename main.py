@@ -715,8 +715,13 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
             if not fwd_data.get("ok"):
                 log.error(f"❌ forwardMessage для поста {post_id}: {fwd_data.get('description')}")
                 return
-            forwarded_id = fwd_data["result"]["message_id"]
-            log.info(f"📨 Пост {post_id} → переслан как msg_id={forwarded_id} в чат комментариев")
+            fwd_result = fwd_data["result"]
+            forwarded_id = fwd_result["message_id"]
+            # message_thread_id — ID треда поста в чате комментариев.
+            # Это НЕ то же самое что message_id пересланного сообщения.
+            # Telegram возвращает его в ответе forwardMessage для linked-чатов.
+            thread_id = fwd_result.get("message_thread_id") or forwarded_id
+            log.info(f"📨 Пост {post_id} → переслан msg_id={forwarded_id}, thread_id={thread_id}")
 
             # Шаг 3: удаляем пересланное сообщение — оно не нужно пользователям
             del_r = await client.post(
@@ -724,11 +729,11 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
                 json={"chat_id": DISCUSSION_CHAT_ID, "message_id": forwarded_id}
             )
             if del_r.json().get("ok"):
-                log.info(f"🗑 Переслан. сообщение {forwarded_id} удалено из чата")
+                log.info(f"🗑 Пересланное сообщение {forwarded_id} удалено")
             else:
                 log.warning(f"⚠️ Не удалось удалить пересланное сообщение {forwarded_id}: {del_r.json().get('description')}")
 
-            disc_msg_id = forwarded_id
+            disc_msg_id = thread_id
 
         # ── Шаг 4: отправляем кнопку в тред ─────────────────────
         r = await client.post(
