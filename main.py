@@ -668,30 +668,44 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    """Отправляет кнопку «Глубже» первым комментарием в тред поста.
-    Родная кнопка «Комментировать» в канале остаётся нетронутой.
-    Пользователь видит кнопку только когда заходит в комментарии к посту."""
+    """Отправляет кнопку «Глубже» в тред поста канала.
+    Использует getDiscussionMessage чтобы получить правильный ID сообщения
+    в чате комментариев — нумерация там отличается от нумерации в канале."""
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
     keyboard = {"inline_keyboard": [[
         {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
     ]]}
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Шаг 1: получаем ID поста в чате комментариев через getDiscussionMessage
+        disc = await client.get(
+            f"{TELEGRAM_API}/getDiscussionMessage",
+            params={"chat_id": CHANNEL_ID, "message_id": post_id}
+        )
+        disc_data = disc.json()
+        if not disc_data.get("ok"):
+            log.error(f"❌ getDiscussionMessage для {post_id}: {disc_data.get('description')}")
+            return
+        # ID сообщения в чате комментариев
+        disc_msg_id = disc_data["result"]["message"]["message_id"]
+        log.info(f"📨 Пост {post_id} → обсуждение msg_id={disc_msg_id}")
+
+        # Шаг 2: отправляем сообщение как ответ на правильный пост в чате
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
                 "chat_id": DISCUSSION_CHAT_ID,
                 "text": "📚 Библейский контекст и связи этого поста",
-                "reply_to_message_id": post_id,
+                "reply_to_message_id": disc_msg_id,
                 "reply_markup": keyboard,
                 "disable_notification": True
             }
         )
         result = r.json()
         if result.get("ok"):
-            log.info(f"✅ Кнопка «Глубже» отправлена комментарием к посту {post_id}")
+            log.info(f"✅ Кнопка «Глубже» → тред поста {post_id} (disc_id={disc_msg_id})")
         else:
-            log.error(f"❌ Ошибка для поста {post_id}: {result.get('description')}")
+            log.error(f"❌ sendMessage для поста {post_id}: {result.get('description')}")
 
 
 # ── Обработка поста AI ────────────────────────────────────────
@@ -1485,37 +1499,49 @@ async def update_buttons(delay: float = 1.5):
                 keyboard = {"inline_keyboard": [[
                     {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
                 ]]}
+                # Получаем правильный ID в чате комментариев
+                disc = await client.get(
+                    f"{TELEGRAM_API}/getDiscussionMessage",
+                    params={"chat_id": CHANNEL_ID, "message_id": pid}
+                )
+                disc_data = disc.json()
+                if not disc_data.get("ok"):
+                    log.error(f"❌ getDiscussionMessage {pid}: {disc_data.get('description')}")
+                    done += 1
+                    await asyncio.sleep(delay)
+                    continue
+                disc_msg_id = disc_data["result"]["message"]["message_id"]
                 r = await client.post(
                     f"{TELEGRAM_API}/sendMessage",
                     json={
                         "chat_id": DISCUSSION_CHAT_ID,
                         "text": "📚 Библейский контекст и связи этого поста",
-                        "reply_to_message_id": pid,
+                        "reply_to_message_id": disc_msg_id,
                         "reply_markup": keyboard,
                         "disable_notification": True
                     }
                 )
                 result = r.json()
                 if result.get("ok"):
-                    log.info(f"✅ Кнопка «Глубже» добавлена комментарием к посту {pid}")
+                    log.info(f"✅ Кнопка → тред поста {pid} (disc={disc_msg_id})")
                 else:
                     desc = result.get("description","")
                     if "Too Many Requests" in desc:
                         wait = 30
-                        log.warning(f"⏳ 429 для поста {pid}, ждём {wait}s...")
+                        log.warning(f"⏳ 429 для {pid}, ждём {wait}s...")
                         await asyncio.sleep(wait)
                         r2 = await client.post(
                             f"{TELEGRAM_API}/sendMessage",
                             json={
                                 "chat_id": DISCUSSION_CHAT_ID,
                                 "text": "📚 Библейский контекст и связи этого поста",
-                                "reply_to_message_id": pid,
+                                "reply_to_message_id": disc_msg_id,
                                 "reply_markup": keyboard,
                                 "disable_notification": True
                             }
                         )
                         if r2.json().get("ok"):
-                            log.info(f"✅ Кнопка добавлена (retry): пост {pid}")
+                            log.info(f"✅ Кнопка (retry) → пост {pid}")
                         else:
                             log.error(f"❌ Пост {pid}: {r2.json().get('description')}")
                     else:
