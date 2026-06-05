@@ -668,44 +668,69 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    """Отправляет кнопку «Глубже» в чат комментариев поста.
-    Использует getDiscussionMessage чтобы убедиться что тред существует,
-    затем шлёт сообщение в чат — без reply, чтобы оно было первым независимым
-    сообщением треда, а не ответом на чей-то комментарий."""
+    """Отправляет кнопку «Глубже» первым сообщением в тред поста в чате комментариев.
+
+    Алгоритм (работает для любых постов — старых и новых):
+    1. Сначала пробуем getDiscussionMessage — быстрый путь для новых постов.
+    2. Если 404 — пересылаем пост в чат комментариев через forwardMessage.
+       Это заставляет Telegram открыть тред и вернуть нам message_id внутри чата.
+    3. Сразу удаляем пересланное сообщение — оно было нужно только как «ключ» к треду.
+    4. Шлём кнопку в тред через message_thread_id — она появляется первым
+       сообщением, не как ответ ни на что.
+    """
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
     keyboard = {"inline_keyboard": [[
         {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
     ]]}
 
-    # Retry-цикл: Telegram создаёт тред в чате комментариев не мгновенно.
-    # Если пост только что вышел — ждём до 3 минут с паузами по 20 секунд.
-    max_attempts = 9
-    retry_delay  = 20  # секунд между попытками
-
     async with httpx.AsyncClient(timeout=15) as client:
-        disc_msg_id = None
-        for attempt in range(1, max_attempts + 1):
-            disc = await client.get(
-                f"{TELEGRAM_API}/getDiscussionMessage",
-                params={"chat_id": CHANNEL_ID, "message_id": post_id}
-            )
-            disc_data = disc.json()
-            if disc_data.get("ok"):
-                disc_msg_id = disc_data["result"]["message"]["message_id"]
-                log.info(f"📨 Пост {post_id} → тред в чате комментариев существует (disc_msg_id={disc_msg_id})")
-                break
-            err = disc_data.get("description", "")
-            if attempt < max_attempts:
-                log.warning(f"⏳ getDiscussionMessage {post_id} попытка {attempt}/{max_attempts}: {err} — ждём {retry_delay}s...")
-                await asyncio.sleep(retry_delay)
-            else:
-                log.error(f"❌ getDiscussionMessage для {post_id} после {max_attempts} попыток: {err}")
-                return
 
-        # Отправляем сообщение в чат комментариев БЕЗ reply_to_message_id —
-        # оно будет первым самостоятельным сообщением, не ответом ни на что.
-        # message_thread_id указывает тред поста, чтобы сообщение попало в нужное обсуждение.
+        # ── Шаг 1: быстрый путь — getDiscussionMessage ──────────
+        disc_msg_id = None
+        disc = await client.get(
+            f"{TELEGRAM_API}/getDiscussionMessage",
+            params={"chat_id": CHANNEL_ID, "message_id": post_id}
+        )
+        disc_data = disc.json()
+        if disc_data.get("ok"):
+            disc_msg_id = disc_data["result"]["message"]["message_id"]
+            log.info(f"📨 Пост {post_id} → getDiscussionMessage OK, disc_msg_id={disc_msg_id}")
+
+        # ── Шаг 2: резервный путь — forwardMessage ───────────────
+        # Используется для старых постов, когда бот не был админом в момент публикации.
+        # forwardMessage открывает тред и возвращает message_id в чате комментариев.
+        if disc_msg_id is None:
+            log.info(f"📨 Пост {post_id} → getDiscussionMessage 404, пробуем forwardMessage...")
+            fwd = await client.post(
+                f"{TELEGRAM_API}/forwardMessage",
+                json={
+                    "chat_id": DISCUSSION_CHAT_ID,
+                    "from_chat_id": CHANNEL_ID,
+                    "message_id": post_id,
+                    "disable_notification": True
+                }
+            )
+            fwd_data = fwd.json()
+            if not fwd_data.get("ok"):
+                log.error(f"❌ forwardMessage для поста {post_id}: {fwd_data.get('description')}")
+                return
+            forwarded_id = fwd_data["result"]["message_id"]
+            log.info(f"📨 Пост {post_id} → переслан как msg_id={forwarded_id} в чат комментариев")
+
+            # Шаг 3: удаляем пересланное сообщение — оно не нужно пользователям
+            del_r = await client.post(
+                f"{TELEGRAM_API}/deleteMessage",
+                json={"chat_id": DISCUSSION_CHAT_ID, "message_id": forwarded_id}
+            )
+            if del_r.json().get("ok"):
+                log.info(f"🗑 Переслан. сообщение {forwarded_id} удалено из чата")
+            else:
+                log.warning(f"⚠️ Не удалось удалить пересланное сообщение {forwarded_id}: {del_r.json().get('description')}")
+
+            disc_msg_id = forwarded_id
+
+        # ── Шаг 4: отправляем кнопку в тред ─────────────────────
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
@@ -718,7 +743,7 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
         )
         result = r.json()
         if result.get("ok"):
-            log.info(f"✅ Кнопка «Глубже» отправлена в тред поста {post_id} (disc_id={disc_msg_id})")
+            log.info(f"✅ Кнопка «Глубже» → тред поста {post_id} (disc_id={disc_msg_id})")
         else:
             desc = result.get("description", "")
             log.error(f"❌ sendMessage для поста {post_id}: {desc}")
