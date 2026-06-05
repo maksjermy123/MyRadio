@@ -720,11 +720,30 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
             # Пересланное сообщение в linked-чате само является ответом на
             # автоматическую копию поста канала (is_automatic_forward).
             # Нам нужен именно её message_id — это и есть disc_msg_id для reply_to_message_id.
-            reply_to = fwd_result.get("reply_to_message") or {}
-            disc_msg_id_from_fwd = reply_to.get("message_id") or fwd_result.get("message_thread_id")
-            log.info(f"📨 Пост {post_id} → переслан msg_id={forwarded_id}, disc_msg_id={disc_msg_id_from_fwd}")
+            log.info(f"📨 Пост {post_id} → переслан msg_id={forwarded_id}")
 
-            # Шаг 3: удаляем пересланное сообщение — оно не нужно пользователям
+            # Шаг 3: отправляем кнопку как ответ на пересланное сообщение —
+            # оно находится в том же треде что и оригинал поста (is_automatic_forward).
+            # ВАЖНО: сначала отправляем кнопку, потом удаляем пересылку,
+            # иначе Telegram не даст ответить на несуществующее сообщение.
+            r = await client.post(
+                f"{TELEGRAM_API}/sendMessage",
+                json={
+                    "chat_id": DISCUSSION_CHAT_ID,
+                    "reply_to_message_id": forwarded_id,
+                    "text": "📚 Библейский контекст и связи этого поста",
+                    "reply_markup": keyboard,
+                    "disable_notification": True
+                }
+            )
+            result = r.json()
+            if result.get("ok"):
+                log.info(f"✅ Кнопка «Глубже» → тред поста {post_id} (via forward {forwarded_id})")
+            else:
+                desc = result.get("description", "")
+                log.error(f"❌ sendMessage для поста {post_id}: {desc}")
+
+            # Шаг 4: удаляем пересланное сообщение — оно больше не нужно
             del_r = await client.post(
                 f"{TELEGRAM_API}/deleteMessage",
                 json={"chat_id": DISCUSSION_CHAT_ID, "message_id": forwarded_id}
@@ -733,15 +752,10 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
                 log.info(f"🗑 Пересланное сообщение {forwarded_id} удалено")
             else:
                 log.warning(f"⚠️ Не удалось удалить пересланное сообщение {forwarded_id}: {del_r.json().get('description')}")
+            return
 
-            if not disc_msg_id_from_fwd:
-                log.error(f"❌ Не удалось определить disc_msg_id для поста {post_id}")
-                return
-            disc_msg_id = disc_msg_id_from_fwd
-
-        # ── Шаг 4: отправляем кнопку в тред ─────────────────────
-        # reply_to_message_id=disc_msg_id помещает сообщение именно в тред поста,
-        # потому что disc_msg_id — это ID автоматической копии поста в чате комментариев.
+        # ── Шаг 4: отправляем кнопку в тред (путь через getDiscussionMessage) ──
+        # reply_to_message_id=disc_msg_id помещает сообщение в тред поста.
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
