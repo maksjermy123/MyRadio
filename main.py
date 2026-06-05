@@ -717,11 +717,12 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
                 return
             fwd_result = fwd_data["result"]
             forwarded_id = fwd_result["message_id"]
-            # message_thread_id — ID треда поста в чате комментариев.
-            # Это НЕ то же самое что message_id пересланного сообщения.
-            # Telegram возвращает его в ответе forwardMessage для linked-чатов.
-            thread_id = fwd_result.get("message_thread_id") or forwarded_id
-            log.info(f"📨 Пост {post_id} → переслан msg_id={forwarded_id}, thread_id={thread_id}")
+            # Пересланное сообщение в linked-чате само является ответом на
+            # автоматическую копию поста канала (is_automatic_forward).
+            # Нам нужен именно её message_id — это и есть disc_msg_id для reply_to_message_id.
+            reply_to = fwd_result.get("reply_to_message") or {}
+            disc_msg_id_from_fwd = reply_to.get("message_id") or fwd_result.get("message_thread_id")
+            log.info(f"📨 Пост {post_id} → переслан msg_id={forwarded_id}, disc_msg_id={disc_msg_id_from_fwd}")
 
             # Шаг 3: удаляем пересланное сообщение — оно не нужно пользователям
             del_r = await client.post(
@@ -733,14 +734,19 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
             else:
                 log.warning(f"⚠️ Не удалось удалить пересланное сообщение {forwarded_id}: {del_r.json().get('description')}")
 
-            disc_msg_id = thread_id
+            if not disc_msg_id_from_fwd:
+                log.error(f"❌ Не удалось определить disc_msg_id для поста {post_id}")
+                return
+            disc_msg_id = disc_msg_id_from_fwd
 
         # ── Шаг 4: отправляем кнопку в тред ─────────────────────
+        # reply_to_message_id=disc_msg_id помещает сообщение именно в тред поста,
+        # потому что disc_msg_id — это ID автоматической копии поста в чате комментариев.
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
                 "chat_id": DISCUSSION_CHAT_ID,
-                "message_thread_id": disc_msg_id,
+                "reply_to_message_id": disc_msg_id,
                 "text": "📚 Библейский контекст и связи этого поста",
                 "reply_markup": keyboard,
                 "disable_notification": True
@@ -1561,7 +1567,7 @@ async def update_buttons(delay: float = 1.5):
                     f"{TELEGRAM_API}/sendMessage",
                     json={
                         "chat_id": DISCUSSION_CHAT_ID,
-                        "message_thread_id": disc_msg_id,
+                        "reply_to_message_id": disc_msg_id,
                         "text": "📚 Библейский контекст и связи этого поста",
                         "reply_markup": keyboard,
                         "disable_notification": True
@@ -1580,7 +1586,7 @@ async def update_buttons(delay: float = 1.5):
                             f"{TELEGRAM_API}/sendMessage",
                             json={
                                 "chat_id": DISCUSSION_CHAT_ID,
-                                "message_thread_id": disc_msg_id,
+                                "reply_to_message_id": disc_msg_id,
                                 "text": "📚 Библейский контекст и связи этого поста",
                                 "reply_markup": keyboard,
                                 "disable_notification": True
