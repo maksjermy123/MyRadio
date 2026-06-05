@@ -668,44 +668,60 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    """Отправляет кнопку «Глубже» в тред поста канала.
-    Использует getDiscussionMessage чтобы получить правильный ID сообщения
-    в чате комментариев — нумерация там отличается от нумерации в канале."""
+    """Отправляет кнопку «Глубже» в чат комментариев поста.
+    Использует getDiscussionMessage чтобы убедиться что тред существует,
+    затем шлёт сообщение в чат — без reply, чтобы оно было первым независимым
+    сообщением треда, а не ответом на чей-то комментарий."""
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
     keyboard = {"inline_keyboard": [[
         {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
     ]]}
-    async with httpx.AsyncClient(timeout=15) as client:
-        # Шаг 1: получаем ID поста в чате комментариев через getDiscussionMessage
-        disc = await client.get(
-            f"{TELEGRAM_API}/getDiscussionMessage",
-            params={"chat_id": CHANNEL_ID, "message_id": post_id}
-        )
-        disc_data = disc.json()
-        if not disc_data.get("ok"):
-            log.error(f"❌ getDiscussionMessage для {post_id}: {disc_data.get('description')}")
-            return
-        # ID сообщения в чате комментариев
-        disc_msg_id = disc_data["result"]["message"]["message_id"]
-        log.info(f"📨 Пост {post_id} → обсуждение msg_id={disc_msg_id}")
 
-        # Шаг 2: отправляем сообщение как ответ на правильный пост в чате
+    # Retry-цикл: Telegram создаёт тред в чате комментариев не мгновенно.
+    # Если пост только что вышел — ждём до 3 минут с паузами по 20 секунд.
+    max_attempts = 9
+    retry_delay  = 20  # секунд между попытками
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        disc_msg_id = None
+        for attempt in range(1, max_attempts + 1):
+            disc = await client.get(
+                f"{TELEGRAM_API}/getDiscussionMessage",
+                params={"chat_id": CHANNEL_ID, "message_id": post_id}
+            )
+            disc_data = disc.json()
+            if disc_data.get("ok"):
+                disc_msg_id = disc_data["result"]["message"]["message_id"]
+                log.info(f"📨 Пост {post_id} → тред в чате комментариев существует (disc_msg_id={disc_msg_id})")
+                break
+            err = disc_data.get("description", "")
+            if attempt < max_attempts:
+                log.warning(f"⏳ getDiscussionMessage {post_id} попытка {attempt}/{max_attempts}: {err} — ждём {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+            else:
+                log.error(f"❌ getDiscussionMessage для {post_id} после {max_attempts} попыток: {err}")
+                return
+
+        # Отправляем сообщение в чат комментариев БЕЗ reply_to_message_id —
+        # оно будет первым самостоятельным сообщением, не ответом ни на что.
+        # message_thread_id указывает тред поста, чтобы сообщение попало в нужное обсуждение.
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
                 "chat_id": DISCUSSION_CHAT_ID,
+                "message_thread_id": disc_msg_id,
                 "text": "📚 Библейский контекст и связи этого поста",
-                "reply_to_message_id": disc_msg_id,
                 "reply_markup": keyboard,
                 "disable_notification": True
             }
         )
         result = r.json()
         if result.get("ok"):
-            log.info(f"✅ Кнопка «Глубже» → тред поста {post_id} (disc_id={disc_msg_id})")
+            log.info(f"✅ Кнопка «Глубже» отправлена в тред поста {post_id} (disc_id={disc_msg_id})")
         else:
-            log.error(f"❌ sendMessage для поста {post_id}: {result.get('description')}")
+            desc = result.get("description", "")
+            log.error(f"❌ sendMessage для поста {post_id}: {desc}")
 
 
 # ── Обработка поста AI ────────────────────────────────────────
@@ -1515,8 +1531,8 @@ async def update_buttons(delay: float = 1.5):
                     f"{TELEGRAM_API}/sendMessage",
                     json={
                         "chat_id": DISCUSSION_CHAT_ID,
+                        "message_thread_id": disc_msg_id,
                         "text": "📚 Библейский контекст и связи этого поста",
-                        "reply_to_message_id": disc_msg_id,
                         "reply_markup": keyboard,
                         "disable_notification": True
                     }
@@ -1534,8 +1550,8 @@ async def update_buttons(delay: float = 1.5):
                             f"{TELEGRAM_API}/sendMessage",
                             json={
                                 "chat_id": DISCUSSION_CHAT_ID,
+                                "message_thread_id": disc_msg_id,
                                 "text": "📚 Библейский контекст и связи этого поста",
-                                "reply_to_message_id": disc_msg_id,
                                 "reply_markup": keyboard,
                                 "disable_notification": True
                             }
