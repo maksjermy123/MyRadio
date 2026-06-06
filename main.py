@@ -1478,15 +1478,30 @@ async def cleanup(delay: float = 1.0):
             )
 
             if not should_have_button:
-                # Удаляем кнопку
-                r = await client.post(
-                    f"{TELEGRAM_API}/editMessageReplyMarkup",
-                    json={"chat_id": CHANNEL_ID, "message_id": pid,
-                          "reply_markup": {"inline_keyboard": []}}
-                )
-                if r.json().get("ok"):
-                    removed_buttons.append(pid)
-                    log.info(f"🗑 Кнопка удалена с поста {pid}")
+                # Удаляем кнопку с retry при 429
+                for attempt in range(3):
+                    r = await client.post(
+                        f"{TELEGRAM_API}/editMessageReplyMarkup",
+                        json={"chat_id": CHANNEL_ID, "message_id": pid,
+                              "reply_markup": {"inline_keyboard": []}}
+                    )
+                    rj = r.json()
+                    if rj.get("ok"):
+                        removed_buttons.append(pid)
+                        log.info(f"🗑 Кнопка удалена с поста {pid}")
+                        break
+                    desc = rj.get("description", "")
+                    if "Too Many Requests" in desc or r.status_code == 429:
+                        wait = int(rj.get("parameters", {}).get("retry_after", 30))
+                        log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
+                        await asyncio.sleep(wait)
+                    elif "message is not modified" in desc or "Bad Request" in desc:
+                        # Кнопки уже нет — не считаем ошибкой
+                        log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
+                        break
+                    else:
+                        log.warning(f"⚠️ Пост {pid}: {desc}")
+                        break
                 # Удаляем из links.json
                 if str(pid) in links_data:
                     del links_data[str(pid)]
