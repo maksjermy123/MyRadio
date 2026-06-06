@@ -697,64 +697,35 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
             disc_msg_id = disc_data["result"]["message"]["message_id"]
             log.info(f"📨 Пост {post_id} → getDiscussionMessage OK, disc_msg_id={disc_msg_id}")
 
-        # ── Шаг 2: резервный путь — forwardMessage ───────────────
-        # Используется для старых постов, когда бот не был админом в момент публикации.
-        # forwardMessage открывает тред и возвращает message_id в чате комментариев.
+        # ── Шаг 2: резервный путь — getChat(DISCUSSION_CHAT_ID) ──
+        # Для старых постов getDiscussionMessage возвращает 404.
+        # Telegram всегда закрепляет последний пост канала в чате комментариев
+        # как pinned_message с is_automatic_forward=true.
+        # Если post_id совпадает — берём pinned_message.message_id как disc_msg_id.
         if disc_msg_id is None:
-            log.info(f"📨 Пост {post_id} → getDiscussionMessage 404, пробуем forwardMessage...")
-            fwd = await client.post(
-                f"{TELEGRAM_API}/forwardMessage",
-                json={
-                    "chat_id": DISCUSSION_CHAT_ID,
-                    "from_chat_id": CHANNEL_ID,
-                    "message_id": post_id,
-                    "disable_notification": True
-                }
+            log.info(f"📨 Пост {post_id} → getDiscussionMessage 404, пробуем getChat...")
+            gc = await client.get(
+                f"{TELEGRAM_API}/getChat",
+                params={"chat_id": DISCUSSION_CHAT_ID}
             )
-            fwd_data = fwd.json()
-            if not fwd_data.get("ok"):
-                log.error(f"❌ forwardMessage для поста {post_id}: {fwd_data.get('description')}")
+            gc_data = gc.json()
+            if gc_data.get("ok"):
+                pinned = gc_data["result"].get("pinned_message", {})
+                if pinned.get("forward_from_message_id") == post_id:
+                    disc_msg_id = pinned["message_id"]
+                    log.info(f"📨 Пост {post_id} → найден через pinned_message, disc_msg_id={disc_msg_id}")
+                else:
+                    log.error(
+                        f"❌ pinned_message.forward_from_message_id="
+                        f"{pinned.get('forward_from_message_id')} ≠ post_id={post_id}. "
+                        f"Этот пост не является последним в канале — добавьте disc_id вручную."
+                    )
+                    return
+            else:
+                log.error(f"❌ getChat failed: {gc_data.get('description')}")
                 return
-            fwd_result = fwd_data["result"]
-            forwarded_id = fwd_result["message_id"]
-            # Пересланное сообщение в linked-чате само является ответом на
-            # автоматическую копию поста канала (is_automatic_forward).
-            # Нам нужен именно её message_id — это и есть disc_msg_id для reply_to_message_id.
-            log.info(f"📨 Пост {post_id} → переслан msg_id={forwarded_id}")
 
-            # Шаг 3: отправляем кнопку как ответ на пересланное сообщение —
-            # оно находится в том же треде что и оригинал поста (is_automatic_forward).
-            # ВАЖНО: сначала отправляем кнопку, потом удаляем пересылку,
-            # иначе Telegram не даст ответить на несуществующее сообщение.
-            r = await client.post(
-                f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id": DISCUSSION_CHAT_ID,
-                    "reply_to_message_id": forwarded_id,
-                    "text": "📚 Библейский контекст и связи этого поста",
-                    "reply_markup": keyboard,
-                    "disable_notification": True
-                }
-            )
-            result = r.json()
-            if result.get("ok"):
-                log.info(f"✅ Кнопка «Глубже» → тред поста {post_id} (via forward {forwarded_id})")
-            else:
-                desc = result.get("description", "")
-                log.error(f"❌ sendMessage для поста {post_id}: {desc}")
-
-            # Шаг 4: удаляем пересланное сообщение — оно больше не нужно
-            del_r = await client.post(
-                f"{TELEGRAM_API}/deleteMessage",
-                json={"chat_id": DISCUSSION_CHAT_ID, "message_id": forwarded_id}
-            )
-            if del_r.json().get("ok"):
-                log.info(f"🗑 Пересланное сообщение {forwarded_id} удалено")
-            else:
-                log.warning(f"⚠️ Не удалось удалить пересланное сообщение {forwarded_id}: {del_r.json().get('description')}")
-            return
-
-        # ── Шаг 4: отправляем кнопку в тред (путь через getDiscussionMessage) ──
+        # ── Шаг 3: отправляем кнопку в тред ──────────────────────
         # reply_to_message_id=disc_msg_id помещает сообщение в тред поста.
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
