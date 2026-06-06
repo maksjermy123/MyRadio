@@ -1449,6 +1449,86 @@ async def remove_button(post_id: int):
         return {"ok": False, "error": result.get("description")}
 
 
+
+
+
+@app.get("/remove_all_buttons")
+async def remove_all_buttons(delay: float = 2.0):
+    """Удаляет кнопки «Глубже» со ВСЕХ постов в links.json без разбора.
+    Используй перед тем как добавлять кнопки в треды комментариев.
+    delay — пауза в секундах между запросами (по умолчанию 2.0)."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+    if not links_data:
+        return {"error": "links.json not found"}
+
+    removed = []
+    skipped = []
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        for post_id_str in sorted(links_data.keys(), key=lambda x: int(x)):
+            pid = int(post_id_str)
+            for attempt in range(3):
+                r = await client.post(
+                    f"{TELEGRAM_API}/editMessageReplyMarkup",
+                    json={"chat_id": CHANNEL_ID, "message_id": pid,
+                          "reply_markup": {"inline_keyboard": []}}
+                )
+                rj = r.json()
+                if rj.get("ok"):
+                    removed.append(pid)
+                    log.info(f"🗑 Кнопка удалена с поста {pid}")
+                    break
+                desc = rj.get("description", "")
+                if "Too Many Requests" in desc or r.status_code == 429:
+                    wait = int(rj.get("parameters", {}).get("retry_after", 30))
+                    log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
+                    await asyncio.sleep(wait)
+                elif "message is not modified" in desc or "Bad Request" in desc:
+                    skipped.append(pid)
+                    log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
+                    break
+                else:
+                    skipped.append(pid)
+                    log.warning(f"⚠️ Пост {pid}: {desc}")
+                    break
+            await asyncio.sleep(delay)
+
+    log.info(f"remove_all_buttons: удалено={removed}, пропущено={skipped}")
+    return {"ok": True, "removed": removed, "skipped": skipped}
+
+@app.get("/send_button")
+async def send_button_to_thread(post_id: int, disc_id: int):
+    """Отправляет кнопку «Глубже» в тред поста вручную.
+    post_id — ID поста в канале, disc_id — ID автокопии поста в чате комментариев.
+    Как найти disc_id: зайди в тред поста → скопируй ссылку на первое сообщение
+    (это автокопия поста от Telegram) → число в конце ссылки и есть disc_id.
+    Пример: https://myradio-rrsk.onrender.com/send_button?post_id=222&disc_id=123"""
+    bot_username = BOT_USERNAME.lstrip("@")
+    miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
+    keyboard = {"inline_keyboard": [[
+        {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
+    ]]}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={
+                "chat_id": DISCUSSION_CHAT_ID,
+                "reply_to_message_id": disc_id,
+                "text": "📚 Библейский контекст и связи этого поста",
+                "reply_markup": keyboard,
+                "disable_notification": True
+            }
+        )
+    result = r.json()
+    if result.get("ok"):
+        log.info(f"✅ Кнопка «Глубже» вручную → тред поста {post_id} (disc_id={disc_id})")
+        return {"ok": True, "post_id": post_id, "disc_id": disc_id}
+    else:
+        desc = result.get("description", "")
+        log.error(f"❌ send_button post={post_id} disc={disc_id}: {desc}")
+        return {"ok": False, "error": desc}
+
 @app.get("/cleanup")
 async def cleanup(delay: float = 1.0):
     """Чистит лишние кнопки и links.json:
