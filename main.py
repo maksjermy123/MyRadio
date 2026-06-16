@@ -96,6 +96,8 @@ SECONDARY_TAGS = {
 # #продолжение убран из IGNORE_TAGS — он должен сохраняться в tags для определения первых частей пар
 IGNORE_TAGS  = {"#отчтениякпреображению"}
 SKIP_AI_TAGS = {"#анонс", "#новости", "#челлендж", "#лука", "#цитата", "#продолжение", "#духовныйдневник", "#юмор"}
+# Теги которые отключают только кнопку «Глубже», но не AI-анализ
+SKIP_BUTTON_TAGS = {"#без_глубже"}
 
 # ── Карта книг Библии ─────────────────────────────────────────
 BOOK_NUM = {
@@ -715,12 +717,28 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
                     disc_msg_id = pinned["message_id"]
                     log.info(f"📨 Пост {post_id} → найден через pinned_message, disc_msg_id={disc_msg_id}")
                 else:
-                    log.error(
-                        f"❌ pinned_message.forward_from_message_id="
-                        f"{pinned.get('forward_from_message_id')} ≠ post_id={post_id}. "
-                        f"Этот пост не является последним в канале — добавьте disc_id вручную."
-                    )
-                    return
+                    # Telegram мог ещё не обновить pinned_message если посты вышли почти одновременно.
+                    # Ждём и повторяем попытки.
+                    found = False
+                    for attempt in range(6):
+                        wait = 10 * (attempt + 1)
+                        log.warning(
+                            f"⏳ pinned={pinned.get('forward_from_message_id')} ≠ {post_id}, "
+                            f"ждём {wait}s (попытка {attempt+1}/6)..."
+                        )
+                        await asyncio.sleep(wait)
+                        gc2 = await client.get(f"{TELEGRAM_API}/getChat", params={"chat_id": DISCUSSION_CHAT_ID})
+                        gc2_data = gc2.json()
+                        if gc2_data.get("ok"):
+                            pinned2 = gc2_data["result"].get("pinned_message", {})
+                            if pinned2.get("forward_from_message_id") == post_id:
+                                disc_msg_id = pinned2["message_id"]
+                                log.info(f"📨 Пост {post_id} → найден через pinned_message (retry), disc_msg_id={disc_msg_id}")
+                                found = True
+                                break
+                    if not found:
+                        log.error(f"❌ Не удалось найти disc_msg_id для поста {post_id} — добавьте вручную через /send_button")
+                        return
             else:
                 log.error(f"❌ getChat failed: {gc_data.get('description')}")
                 return
@@ -853,7 +871,15 @@ async def process_post(post: dict):
                              f"links for post {post_id}")
 
     log.info(f"✅ Post {post_id} processed. Related: {result['related_posts']}")
-    await send_deeper_button(post_id, use_web_app=True)
+    # Не отправляем кнопку для первых частей пар (#продолжение) —
+    # кнопка должна быть только на последнем (финальном) посте пары.
+    post_tags = tags  # уже извлечены выше в process_post
+    if "#продолжение" in post_tags:
+        log.info(f"⏭ Пост {post_id} — #продолжение, кнопку не ставим (поставим на следующем)")
+    elif post_tags & SKIP_BUTTON_TAGS:
+        log.info(f"⏭ Пост {post_id} — тег {post_tags & SKIP_BUTTON_TAGS}, кнопка отключена автором")
+    else:
+        await send_deeper_button(post_id, use_web_app=True)
 
 
 # ── posts.json: добавление/обновление ────────────────────────
