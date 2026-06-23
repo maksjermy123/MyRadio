@@ -66,7 +66,6 @@ def _cohere_headers():
     return {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
 
 # ── Хэштеги ───────────────────────────────────────────────────
-# Основные теги → категории в оглавлении
 HASHTAG_MAP = {
     "#библия":          "📖 Библия и толкование",
     "#богословие":      "✝️ Богословие",
@@ -86,8 +85,6 @@ HASHTAG_MAP = {
     "#новости":         "📻 Анонсы канала",
 }
 
-# Второстепенные теги — только для поиска, без отдельной категории.
-# Бот автоматически добавляет сюда новые неизвестные теги.
 SECONDARY_TAGS = {
     "#фильм", "#достоевский", "#солженицын", "#клайвльюис",
     "#чехов", "#лесков", "#толстой", "#семинар", "#лука",
@@ -126,7 +123,6 @@ BOOK_NUM = {
     "Евреям": 65, "Откровение": 66,
 }
 
-# Индексы соответствуют порядку книг в ru_synodal.json
 BOOK_JSON_INDEX = {
     "Бытие": 0, "Исход": 1, "Левит": 2, "Числа": 3, "Второзаконие": 4,
     "Иисус Навин": 5, "Судьи": 6, "Руфь": 7,
@@ -275,12 +271,6 @@ def _gh_headers() -> dict:
 
 
 async def github_get(client: httpx.AsyncClient, filename: str):
-    """
-    Читает файл с GitHub.
-    Для файлов > 1 МБ GitHub API не возвращает content через Contents API —
-    используем Git Blobs API который не имеет ограничения по размеру.
-    """
-    # Сначала получаем SHA через Contents API (быстро, без содержимого)
     meta_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
     r = await client.get(meta_url, headers=_gh_headers(), params={"ref": GITHUB_BRANCH})
     if r.status_code == 404:
@@ -290,24 +280,20 @@ async def github_get(client: httpx.AsyncClient, filename: str):
     sha = meta["sha"]
     file_size = meta.get("size", 0)
 
-    # Если файл маленький — берём content прямо из ответа
     if file_size < 900_000 and meta.get("content"):
         try:
             data = json.loads(base64.b64decode(meta["content"]).decode())
             return data, sha
         except Exception:
-            pass  # fallback на blob API
+            pass
 
-    # Для больших файлов — Git Blobs API (без ограничения размера)
     blob_url = f"https://api.github.com/repos/{GITHUB_REPO}/git/blobs/{sha}"
     blob_headers = {**_gh_headers(), "Accept": "application/vnd.github.v3.raw"}
     r2 = await client.get(blob_url, headers=blob_headers, timeout=30.0)
     r2.raise_for_status()
-    # vnd.github.v3.raw возвращает сырой текст файла
     try:
         data = r2.json()
     except Exception:
-        # Если вернулся raw content как текст
         data = json.loads(r2.text)
     return data, sha
 
@@ -335,7 +321,6 @@ async def github_put(client: httpx.AsyncClient, filename: str, content: dict, sh
 
 # ── Парсинг хэштегов ─────────────────────────────────────────
 def extract_hashtags(message: dict) -> list:
-    """Парсинг хэштегов с учётом UTF-16 (эмодзи = 2 единицы)."""
     tags = []
     for field in ("entities", "caption_entities"):
         entities = message.get(field) or []
@@ -355,8 +340,6 @@ def extract_hashtags(message: dict) -> list:
 
 
 def hashtags_to_topics(tags: list) -> list:
-    """Возвращает категории для оглавления. Неизвестные теги автоматически
-    добавляются в SECONDARY_TAGS — они доступны для поиска, но без категории."""
     topics, seen = [], set()
     for tag in tags:
         if tag in IGNORE_TAGS:
@@ -366,14 +349,12 @@ def hashtags_to_topics(tags: list) -> list:
             topics.append(cat)
             seen.add(cat)
         elif not cat and tag not in SECONDARY_TAGS and tag not in SKIP_AI_TAGS:
-            # Новый неизвестный тег — запоминаем как второстепенный
             log.info(f"🆕 Новый тег: {tag} → добавлен в SECONDARY_TAGS")
             SECONDARY_TAGS.add(tag)
     return topics
 
 
 def get_post_tags(tags: list) -> list:
-    """Все теги поста для поиска: основные + второстепенные (без служебных)."""
     return [t for t in tags if t not in IGNORE_TAGS]
 
 
@@ -395,7 +376,6 @@ def recalc_topics(posts: list) -> list:
 
 
 def should_process_ai(tags: list) -> bool:
-    """Нужно ли запускать AI для этого набора тегов."""
     non_skip = [t for t in tags if t not in SKIP_AI_TAGS and t not in IGNORE_TAGS]
     return bool(non_skip)
 
@@ -406,7 +386,6 @@ def normalize_book(name: str) -> str:
 
 
 def parse_ref(ref: str):
-    """Разбираем ref на (book_num, chapter, verse_start) или None."""
     try:
         ref = ref.strip()
         ref = re.split(r' [—–-]{1,2} ', ref)[0].strip()
@@ -527,7 +506,6 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
         db = await get_theology_db()
         if not db:
             return []
-        # Берём все записи — не случайную выборку, чтобы не пропустить релевантное
         sample = db[:]
         documents = [rec["text"][:400] for rec in sample]
         payload = {
@@ -544,11 +522,9 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
         if not results:
             return []
         top_score = results[0]["relevance_score"]
-        # Высокий порог: если лучшая цитата не очень близка — не показываем ничего
         if top_score < 0.92:
             log.info(f"Theology: top_score={top_score:.3f} < 0.92 — цитаты не релевантны, пропускаем")
             return []
-        # Берём только цитаты близкие к лучшей (не ниже 85% от топа)
         threshold = top_score * 0.85
         quotes = []
         seen_authors = set()
@@ -557,7 +533,6 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
             if score < threshold:
                 break
             rec = sample[res["index"]]
-            # Не более одной цитаты от одного автора
             if rec["author"] in seen_authors:
                 continue
             seen_authors.add(rec["author"])
@@ -652,7 +627,6 @@ async def analyze_post(post_text: str, topics: list):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
     }
-    # Retry при 429 (rate limit Groq): ждём до 65 сек и пробуем ещё раз
     for attempt in range(3):
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
@@ -670,16 +644,7 @@ async def analyze_post(post_text: str, topics: list):
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
 async def send_deeper_button(post_id: int, use_web_app: bool = False):
-    """Отправляет кнопку «Глубже» первым сообщением в тред поста в чате комментариев.
-
-    Алгоритм (работает для любых постов — старых и новых):
-    1. Сначала пробуем getDiscussionMessage — быстрый путь для новых постов.
-    2. Если 404 — пересылаем пост в чат комментариев через forwardMessage.
-       Это заставляет Telegram открыть тред и вернуть нам message_id внутри чата.
-    3. Сразу удаляем пересланное сообщение — оно было нужно только как «ключ» к треду.
-    4. Шлём кнопку в тред через message_thread_id — она появляется первым
-       сообщением, не как ответ ни на что.
-    """
+    """Отправляет кнопку «Глубже» в тред поста в чате комментариев."""
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
     keyboard = {"inline_keyboard": [[
@@ -700,10 +665,6 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
             log.info(f"📨 Пост {post_id} → getDiscussionMessage OK, disc_msg_id={disc_msg_id}")
 
         # ── Шаг 2: резервный путь — getChat(DISCUSSION_CHAT_ID) ──
-        # Для старых постов getDiscussionMessage возвращает 404.
-        # Telegram всегда закрепляет последний пост канала в чате комментариев
-        # как pinned_message с is_automatic_forward=true.
-        # Если post_id совпадает — берём pinned_message.message_id как disc_msg_id.
         if disc_msg_id is None:
             log.info(f"📨 Пост {post_id} → getDiscussionMessage 404, пробуем getChat...")
             gc = await client.get(
@@ -717,8 +678,6 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
                     disc_msg_id = pinned["message_id"]
                     log.info(f"📨 Пост {post_id} → найден через pinned_message, disc_msg_id={disc_msg_id}")
                 else:
-                    # Telegram мог ещё не обновить pinned_message если посты вышли почти одновременно.
-                    # Ждём и повторяем попытки.
                     found = False
                     for attempt in range(6):
                         wait = 10 * (attempt + 1)
@@ -744,7 +703,6 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
                 return
 
         # ── Шаг 3: отправляем кнопку в тред ──────────────────────
-        # reply_to_message_id=disc_msg_id помещает сообщение в тред поста.
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
@@ -765,7 +723,6 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
 
 # ── Обработка поста AI ────────────────────────────────────────
 async def process_post(post: dict):
-    """Полный AI-пайплайн: embedding → Groq → Cohere Rerank → Bible text → links.json."""
     post_id = post.get("message_id") or post.get("id")
     text = post.get("text", "") or post.get("caption", "")
     if not text or not post_id:
@@ -778,7 +735,6 @@ async def process_post(post: dict):
         return
 
     # Склейка с предыдущим постом если он помечен #продолжение
-    # (текущий пост — вторая и финальная часть)
     prev_id = post_id - 1
     async with httpx.AsyncClient(timeout=15) as _cl:
         _posts_check, _ = await github_get(_cl, GITHUB_FILE)
@@ -833,14 +789,11 @@ async def process_post(post: dict):
     try:
         related_task = (find_related_by_embedding(post_id, embedding, posts_data)
                         if embedding else asyncio.sleep(0))
-        # Groq анализ идёт первым — нам нужен reflection как точный запрос для Rerank
         result, related = await asyncio.gather(
             analyze_post(text, topics), related_task
         )
         if not embedding:
             related = []
-        # Используем reflection (тезис автора) как запрос для богословской базы —
-        # это точнее чем сырой текст поста
         theology_query = result.get("reflection") or text[:500]
         theology_query = f"{theology_query}\n\n{text[:500]}"
         theology_quotes = await find_theology_quotes(theology_query)
@@ -871,13 +824,13 @@ async def process_post(post: dict):
                              f"links for post {post_id}")
 
     log.info(f"✅ Post {post_id} processed. Related: {result['related_posts']}")
-    # Не отправляем кнопку для первых частей пар (#продолжение) —
-    # кнопка должна быть только на последнем (финальном) посте пары.
-    post_tags = tags  # уже извлечены выше в process_post
-    if "#продолжение" in post_tags:
+
+    # Не отправляем кнопку для первых частей пар (#продолжение)
+    post_tags = tags
+    if "#продолжение" in (post_tags or []):
         log.info(f"⏭ Пост {post_id} — #продолжение, кнопку не ставим (поставим на следующем)")
-    elif post_tags & SKIP_BUTTON_TAGS:
-        log.info(f"⏭ Пост {post_id} — тег {post_tags & SKIP_BUTTON_TAGS}, кнопка отключена автором")
+    elif set(post_tags) & SKIP_BUTTON_TAGS:
+        log.info(f"⏭ Пост {post_id} — тег {set(post_tags) & SKIP_BUTTON_TAGS}, кнопка отключена автором")
     else:
         await send_deeper_button(post_id, use_web_app=True)
 
@@ -902,7 +855,6 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
     date_raw   = message.get("date", 0)
     date_str   = datetime.fromtimestamp(date_raw, tz=timezone.utc).strftime("%Y-%m-%d")
     chan_user   = (message.get("chat") or {}).get("username") or CHANNEL_ID.lstrip("@")
-    # tags — все теги поста (основные + второстепенные), для поиска в оглавлении
     all_tags = get_post_tags(tags)
     new_post = {
         "id": msg_id, "date": date_str, "title": title,
@@ -1078,11 +1030,13 @@ async def handle_user_message(message: dict):
     deeper_url = "https://maksjermy123.github.io/MyRadio/deeper.html"
     if post_id:
         deeper_url += f"?post_id={post_id}"
+    bot_username = BOT_USERNAME.lstrip("@")
+    # web_app кнопки не работают в личных сообщениях — используем url
     payload = {
         "chat_id": chat_id,
         "text": "📚 Нажми чтобы открыть материалы поста:",
         "reply_markup": {"inline_keyboard": [[
-            {"text": "📚 Глубже", "web_app": {"url": deeper_url}}
+            {"text": "📚 Глубже", "url": f"https://t.me/{bot_username}/deeper?startapp={post_id or ''}"}
         ]]}
     }
     async with httpx.AsyncClient(timeout=10) as client:
@@ -1170,12 +1124,10 @@ async def webhook(request: Request):
     keys = [k for k in update if k != "update_id"]
     log.info(f"▶ update_id={update_id} | поля: {keys}")
 
-    # Личные сообщения пользователей боту
     if update.get("message"):
         asyncio.create_task(handle_user_message(update["message"]))
         return {"ok": True}
 
-    # Новый пост канала
     message = update.get("channel_post")
     is_edit = False
     if not message:
@@ -1197,7 +1149,6 @@ async def webhook(request: Request):
 
     result = await upsert_post_to_github(message, is_edit=is_edit)
 
-    # Запускаем AI только для новых подходящих постов
     if result == "added":
         tags = extract_hashtags(message)
         if should_process_ai(tags):
@@ -1218,7 +1169,6 @@ async def get_links(post_id: int):
 @app.post("/analyze/{post_id}")
 @app.get("/analyze/{post_id}")
 async def manual_analyze(post_id: int):
-    """Ручной запуск AI-анализа для существующего поста (GET и POST)."""
     async with httpx.AsyncClient(timeout=15) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
     if not posts_data:
@@ -1240,8 +1190,6 @@ async def manual_analyze(post_id: int):
 
 @app.get("/analyze_range")
 async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_existing: bool = False):
-    """Анализирует посты в диапазоне ID (включительно). 
-    Пример: /analyze_range?from_id=220&to_id=290&delay=20"""
     async with httpx.AsyncClient(timeout=30) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
@@ -1291,11 +1239,6 @@ async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_exis
 
 @app.get("/analyze_all")
 async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
-    """
-    Запускает AI-анализ для всех постов.
-    skip_existing=true — пропускает посты у которых уже есть links.
-    Открой в браузере и жди — анализ идёт в фоне.
-    """
     async with httpx.AsyncClient(timeout=20) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
@@ -1306,15 +1249,12 @@ async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
     links_data = links_data or {}
     posts = posts_data.get("posts", [])
 
-    # Фильтруем что нужно анализировать
     SKIP_TOPICS = {"📻 Анонсы канала", "📅 Челлендж: Лука", "📔 Духовный дневник", "😄 Юмор"}
     to_analyze = []
     for post in posts:
         post_topics = set(post.get("topics", []))
-        # Пропускаем анонсы и челленджи
         if post_topics and post_topics.issubset(SKIP_TOPICS):
             continue
-        # Пропускаем если уже есть аналитика
         if skip_existing and str(post["id"]) in links_data:
             continue
         text = post.get("text") or post.get("preview") or post.get("title") or ""
@@ -1328,16 +1268,13 @@ async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
         done = 0
         for post in to_analyze:
             pid = post["id"]
-            # Восстанавливаем теги из текста если поле tags отсутствует
             post_tags = post.get("tags") or extract_tags_from_text(
                 post.get("text","") or post.get("preview",""))
-            # Пропускаем первые части спаренных постов
             if "#продолжение" in post_tags:
                 log.info(f"analyze_all: пост {pid} — #продолжение, пропускаем")
                 done += 1
                 await asyncio.sleep(0.5)
                 continue
-            # Пропускаем посты без AI-тегов (анонсы, чистые цитаты и т.д.)
             if not should_process_ai(post_tags):
                 log.info(f"analyze_all: пост {pid} — нет AI-тегов, пропускаем")
                 done += 1
@@ -1370,7 +1307,6 @@ async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
 
 @app.get("/reindex")
 async def reindex_all():
-    """Добавляет embeddings для постов у которых их нет."""
     async with httpx.AsyncClient(timeout=20) as client:
         posts_data, posts_sha = await github_get(client, GITHUB_FILE)
     if not posts_data:
@@ -1393,17 +1329,12 @@ async def reindex_all():
 
 
 def extract_tags_from_text(text: str) -> list:
-    """Восстанавливает хэштеги из сохранённого текста поста.
-    Используется для старых постов без поля tags."""
     import re
     return [m.lower() for m in re.findall(r'#\w+', text)]
 
 
 @app.get("/reindex_all")
 async def reindex_all_posts():
-    """Пересобирает posts.json: обновляет topics и tags для каждого поста.
-    Для постов без тегов в тексте — подтягивает оригинал из Telegram API.
-    Запускать после изменения HASHTAG_MAP."""
     async with httpx.AsyncClient(timeout=30) as client:
         posts_data, sha = await github_get(client, GITHUB_FILE)
     if not posts_data:
@@ -1416,15 +1347,11 @@ async def reindex_all_posts():
 
     async with httpx.AsyncClient(timeout=20) as client:
         for post in posts:
-            # 1. Берём теги из поля tags или восстанавливаем из сохранённого текста
             raw_tags = post.get("tags")
             if not raw_tags:
                 text = post.get("text", "") or post.get("preview", "")
                 raw_tags = extract_tags_from_text(text)
 
-            # 2. Если тегов нет в тексте — теги в конце текста были обрезаны.
-            # Bot API не позволяет читать старые посты канала без пересылки.
-            # Такие посты помечаем для ручной проверки.
             if not raw_tags:
                 log.warning(f"reindex_all: пост {post['id']} — теги не найдены в тексте, пропускаем")
 
@@ -1459,7 +1386,6 @@ async def reindex_all_posts():
 
 @app.get("/remove_button/{post_id}")
 async def remove_button(post_id: int):
-    """Удаляет inline-кнопку с поста канала (ставит пустую клавиатуру)."""
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             f"{TELEGRAM_API}/editMessageReplyMarkup",
@@ -1475,14 +1401,8 @@ async def remove_button(post_id: int):
         return {"ok": False, "error": result.get("description")}
 
 
-
-
-
 @app.get("/remove_all_buttons")
 async def remove_all_buttons(delay: float = 2.0):
-    """Удаляет кнопки «Глубже» со ВСЕХ постов в links.json без разбора.
-    Используй перед тем как добавлять кнопки в треды комментариев.
-    delay — пауза в секундах между запросами (по умолчанию 2.0)."""
     async with httpx.AsyncClient(timeout=30) as client:
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
     if not links_data:
@@ -1523,13 +1443,9 @@ async def remove_all_buttons(delay: float = 2.0):
     log.info(f"remove_all_buttons: удалено={removed}, пропущено={skipped}")
     return {"ok": True, "removed": removed, "skipped": skipped}
 
+
 @app.get("/send_button")
 async def send_button_to_thread(post_id: int, disc_id: int):
-    """Отправляет кнопку «Глубже» в тред поста вручную.
-    post_id — ID поста в канале, disc_id — ID автокопии поста в чате комментариев.
-    Как найти disc_id: зайди в тред поста → скопируй ссылку на первое сообщение
-    (это автокопия поста от Telegram) → число в конце ссылки и есть disc_id.
-    Пример: https://myradio-rrsk.onrender.com/send_button?post_id=222&disc_id=123"""
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
     keyboard = {"inline_keyboard": [[
@@ -1555,13 +1471,9 @@ async def send_button_to_thread(post_id: int, disc_id: int):
         log.error(f"❌ send_button post={post_id} disc={disc_id}: {desc}")
         return {"ok": False, "error": desc}
 
+
 @app.get("/cleanup")
 async def cleanup(delay: float = 1.0):
-    """Чистит лишние кнопки и links.json:
-    - Удаляет кнопки с постов #продолжение (первые части пар)
-    - Удаляет кнопки с постов без AI-тегов (#цитата, #анонс и т.д.)
-    - Удаляет записи таких постов из links.json
-    Запускай после analyze_all."""
     async with httpx.AsyncClient(timeout=30) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
@@ -1584,7 +1496,6 @@ async def cleanup(delay: float = 1.0):
             )
 
             if not should_have_button:
-                # Удаляем кнопку с retry при 429
                 for attempt in range(3):
                     r = await client.post(
                         f"{TELEGRAM_API}/editMessageReplyMarkup",
@@ -1602,13 +1513,11 @@ async def cleanup(delay: float = 1.0):
                         log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
                         await asyncio.sleep(wait)
                     elif "message is not modified" in desc or "Bad Request" in desc:
-                        # Кнопки уже нет — не считаем ошибкой
                         log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
                         break
                     else:
                         log.warning(f"⚠️ Пост {pid}: {desc}")
                         break
-                # Удаляем из links.json
                 if str(pid) in links_data:
                     del links_data[str(pid)]
                     removed_links.append(pid)
@@ -1626,8 +1535,6 @@ async def cleanup(delay: float = 1.0):
 
 @app.get("/update_buttons")
 async def update_buttons(delay: float = 1.5):
-    """Обновляет кнопки «Глубже» на всех постах у которых есть links.json запись.
-    Не запускает AI — только переставляет кнопки с актуальным URL."""
     async with httpx.AsyncClient(timeout=30) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
@@ -1642,7 +1549,6 @@ async def update_buttons(delay: float = 1.5):
         pid = post["id"]
         post_tags = post.get("tags") or extract_tags_from_text(
             post.get("text","") or post.get("preview",""))
-        # Только посты с AI-анализом и правильными тегами
         if str(pid) not in links_data:
             continue
         if not should_process_ai(post_tags) or "#продолжение" in post_tags:
@@ -1657,7 +1563,6 @@ async def update_buttons(delay: float = 1.5):
                 keyboard = {"inline_keyboard": [[
                     {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
                 ]]}
-                # Получаем правильный ID в чате комментариев
                 disc = await client.get(
                     f"{TELEGRAM_API}/getDiscussionMessage",
                     params={"chat_id": CHANNEL_ID, "message_id": pid}
@@ -1714,7 +1619,6 @@ async def update_buttons(delay: float = 1.5):
 
 @app.get("/bulk_deeper")
 async def bulk_deeper(delay: float = 1.5):
-    """Добавляет кнопку «Глубже» ко всем постам у которых уже есть links."""
     async with httpx.AsyncClient(timeout=15) as client:
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
     if not links_data:
@@ -1768,18 +1672,12 @@ async def check_webhook():
             f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo")).json()
 
 
-
 @app.get("/import_texts")
 async def import_texts():
-    """
-    Читает result.json с GitHub, добавляет полный текст в posts.json,
-    затем удаляет result.json с GitHub.
-    """
     if not GITHUB_TOKEN:
         return {"error": "GITHUB_TOKEN not set"}
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        # Читаем result.json
         try:
             result_data, result_sha = await github_get(client, "result.json")
         except Exception as e:
@@ -1788,7 +1686,6 @@ async def import_texts():
         messages = result_data.get("messages", [])
         log.info(f"import_texts: {len(messages)} сообщений в result.json")
 
-        # Строим словарь id → полный текст
         tg_texts = {}
         for msg in messages:
             if msg.get("type") != "message":
@@ -1809,11 +1706,9 @@ async def import_texts():
 
         log.info(f"import_texts: текстов найдено: {len(tg_texts)}")
 
-        # Читаем posts.json
         posts_data, posts_sha = await github_get(client, GITHUB_FILE)
         posts = posts_data.get("posts", [])
 
-        # Обновляем тексты
         updated = 0
         for post in posts:
             pid = post["id"]
@@ -1825,11 +1720,9 @@ async def import_texts():
 
         log.info(f"import_texts: обновлено {updated} постов")
 
-        # Сохраняем posts.json
         await github_put(client, GITHUB_FILE, posts_data, posts_sha,
                          f"import: full text for {updated} posts")
 
-        # Удаляем result.json с GitHub
         try:
             del_body = {
                 "message": "cleanup: remove result.json",
@@ -1848,6 +1741,7 @@ async def import_texts():
         "posts_updated": updated,
         "message": f"Готово! Обновлено {updated} постов. Теперь запусти /reindex и /analyze_all"
     }
+
 
 @app.get("/debug_last")
 async def debug_last():
