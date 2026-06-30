@@ -227,6 +227,10 @@ input[type=range].vs::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
       <span class="tt-ico">📻</span>
       <span>Радио</span>
     </button>
+    <button class="tt" id="tb-bible" onclick="openBiblePlan()">
+      <span class="tt-ico">📅</span>
+      <span>План</span>
+    </button>
   </div>
 
   <!-- ═══ ОГЛАВЛЕНИЕ ═══ -->
@@ -376,6 +380,13 @@ if (tg) {
 }
 
 /* ── TABS ── */
+function openBiblePlan(){
+  if (tg && tg.openTelegramLink) {
+    tg.openTelegramLink('https://t.me/mybible_reading_bot/plan');
+  } else {
+    window.open('https://t.me/mybible_reading_bot/plan', '_blank');
+  }
+}
 function switchTab(tab){
   curTab=tab;
   ['toc','radio'].forEach(function(t){
