@@ -29,6 +29,10 @@ log = logging.getLogger("radio")
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def startup_event():
+    bible_scheduler.start()
+
 ALLOWED_ORIGINS = [
     o.strip()
     for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
@@ -1785,7 +1789,6 @@ MSK = ZoneInfo("Europe/Moscow")
 SLOT_HOURS = {"morning": 8, "afternoon": 13, "evening": 20}
 
 bible_scheduler = AsyncIOScheduler(timezone=MSK)
-bible_scheduler.start()
 
 # ── Supabase helpers ──────────────────────────────────────────
 
