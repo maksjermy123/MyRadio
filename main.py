@@ -1971,7 +1971,7 @@ async def bible_send_reminders():
         users = await sb_get_slot(slot)
         for u in users:
             streak = u.get("streak", 0)
-            streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
+            streak_text = f"🔥 {streak} дней читаю подряд" if streak > 0 else "Начни сегодня!"
             await bible_send(
                 u["user_id"],
                 f"📅 Время читать Библию\n{streak_text}",
