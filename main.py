@@ -1950,7 +1950,7 @@ async def bible_webhook(request: Request):
     if text.startswith("/start"):
         await bible_send(
             chat_id,
-            "Привет! Читай Библию по плану — отмечай прочитанное и следи за стриком 🔥\n\nВыбери удобный план и начни сегодня:",
+            "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥\n\nВыбери удобный план и начни сегодня:",
             bible_app_button(),
         )
     else:
@@ -1971,7 +1971,7 @@ async def bible_send_reminders():
         users = await sb_get_slot(slot)
         for u in users:
             streak = u.get("streak", 0)
-            streak_text = f"🔥 {streak} дней читаю подряд" if streak > 0 else "Начни сегодня!"
+            streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
             await bible_send(
                 u["user_id"],
                 f"📅 Время читать Библию\n{streak_text}",
