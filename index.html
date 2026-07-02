@@ -381,10 +381,10 @@ if (tg) {
 
 /* ── TABS ── */
 function openBiblePlan(){
-  if (tg && tg.openTelegramLink) {
+  if(tg&&tg.openTelegramLink){
     tg.openTelegramLink('https://t.me/mybible_reading_bot/plan');
   } else {
-    window.open('https://t.me/mybible_reading_bot/plan', '_blank');
+    window.open('https://t.me/mybible_reading_bot/plan','_blank');
   }
 }
 function switchTab(tab){
