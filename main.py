@@ -29,10 +29,6 @@ log = logging.getLogger("radio")
 
 app = FastAPI()
 
-@app.on_event("startup")
-async def startup_event():
-    bible_scheduler.start()
-
 ALLOWED_ORIGINS = [
     o.strip()
     for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
@@ -1767,16 +1763,16 @@ async def debug_last():
 
 
 # ═══════════════════════════════════════════════════════════════
-# BIBLE READING BOT — добавляется к MyRadio main.py
+# BIBLE READING BOT
 # ═══════════════════════════════════════════════════════════════
 
-BIBLE_BOT_TOKEN   = os.environ.get("BIBLE_BOT_TOKEN", "")
+BIBLE_BOT_TOKEN    = os.environ.get("BIBLE_BOT_TOKEN", "")
 BIBLE_BOT_USERNAME = os.environ.get("BIBLE_BOT_USERNAME", "mybible_reading_bot")
-BIBLE_PAGES_URL   = os.environ.get("BIBLE_PAGES_URL", "https://maksjermy123.github.io/bible-reading-bot/")
-SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
-CHANNEL_LINK      = os.environ.get("CHANNEL_LINK", "https://t.me/Chtenie_Preobrazenie")
-CHANNEL_NAME      = os.environ.get("CHANNEL_NAME", "От чтения к Преображению")
+BIBLE_PAGES_URL    = os.environ.get("BIBLE_PAGES_URL", "https://maksjermy123.github.io/bible-reading-bot/")
+SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY       = os.environ.get("SUPABASE_KEY", "")
+CHANNEL_LINK       = os.environ.get("CHANNEL_LINK", "https://t.me/Chtenie_Preobrazenie")
+CHANNEL_NAME       = os.environ.get("CHANNEL_NAME", "От чтения к Преображению")
 
 BIBLE_API  = f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}"
 SB_HEADERS = {
@@ -1788,9 +1784,14 @@ SB_HEADERS = {
 MSK = ZoneInfo("Europe/Moscow")
 SLOT_HOURS = {"morning": 8, "afternoon": 13, "evening": 20}
 
+# Scheduler defined HERE — before startup event
 bible_scheduler = AsyncIOScheduler(timezone=MSK)
 
-# ── Supabase helpers ──────────────────────────────────────────
+@app.on_event("startup")
+async def bible_scheduler_startup():
+    bible_scheduler.start()
+
+# ── Supabase ──────────────────────────────────────────────────
 
 async def sb_get(user_id: int):
     async with httpx.AsyncClient() as client:
@@ -1835,7 +1836,7 @@ async def sb_get_slot(slot: str) -> list:
         )
         return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
-# ── Telegram helpers ──────────────────────────────────────────
+# ── Telegram ──────────────────────────────────────────────────
 
 async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -1875,7 +1876,7 @@ class BibleSettingsBody(BaseModel):
     notify_slot: str
     notify_on: bool
 
-# ── Bible endpoints ───────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────
 
 @app.post("/plan/register")
 async def bible_register(body: BibleRegisterBody):
@@ -1886,10 +1887,8 @@ async def bible_register(body: BibleRegisterBody):
         "start_date": date.today().isoformat(),
         "notify_slot": body.notify_slot,
         "notify_on": body.notify_on,
-        "streak": 0,
-        "max_streak": 0,
-        "last_read_date": None,
-        "days_done": [],
+        "streak": 0, "max_streak": 0,
+        "last_read_date": None, "days_done": [],
     })
     return {"ok": True}
 
@@ -1919,10 +1918,8 @@ async def bible_read(body: BibleReadBody):
     max_streak = max(row.get("max_streak", 0), streak)
     days_done = list(set((row.get("days_done") or []) + [body.day_number]))
     await sb_patch(body.user_id, {
-        "streak": streak,
-        "max_streak": max_streak,
-        "last_read_date": today,
-        "days_done": days_done,
+        "streak": streak, "max_streak": max_streak,
+        "last_read_date": today, "days_done": days_done,
     })
     return {"ok": True, "streak": streak, "max_streak": max_streak}
 
@@ -1957,6 +1954,11 @@ async def bible_webhook(request: Request):
         await bible_send(chat_id, "Открой план чтения 👇", bible_app_button())
     return {"ok": True}
 
+@app.get("/bible/status")
+async def bible_health():
+    return {"ok": True, "bible_bot": BIBLE_BOT_USERNAME,
+            "supabase": bool(SUPABASE_URL), "pages": BIBLE_PAGES_URL}
+
 # ── Scheduler ─────────────────────────────────────────────────
 
 @bible_scheduler.scheduled_job("cron", minute=0)
@@ -1977,14 +1979,3 @@ async def bible_send_reminders():
                 f"📅 Время читать Библию\n{streak_text}",
                 bible_reminder_button(),
             )
-
-# ── Bible healthcheck ─────────────────────────────────────────
-
-@app.get("/bible/status")
-async def bible_health():
-    return {
-        "ok": True,
-        "bible_bot": BIBLE_BOT_USERNAME,
-        "supabase": bool(SUPABASE_URL),
-        "pages": BIBLE_PAGES_URL,
-    }
