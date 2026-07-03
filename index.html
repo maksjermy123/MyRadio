@@ -678,8 +678,8 @@ function openPost(url){
     window.open(url,'_blank');
     return;
   }
-  /* Мобильный — openTelegramLink открывает пост внутри Telegram */
-  tg.openTelegramLink(url);
+  /* Мобильный — openLink не закрывает Mini App */
+  tg.openLink(url,{try_instant_view:false});
 }
 
 function renderCards(posts,container){
