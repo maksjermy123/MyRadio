@@ -1125,7 +1125,12 @@ async def webhook(request: Request):
     log.info(f"▶ update_id={update_id} | поля: {keys}")
 
     if update.get("message"):
-        asyncio.create_task(handle_user_message(update["message"]))
+        msg = update["message"]
+        # Обрабатываем только личные сообщения боту (тип чата private).
+        # Сообщения из чата комментариев тоже приходят как "message" —
+        # их нужно игнорировать, иначе бот отвечает кнопкой на каждое.
+        if (msg.get("chat") or {}).get("type") == "private":
+            asyncio.create_task(handle_user_message(msg))
         return {"ok": True}
 
     message = update.get("channel_post")
