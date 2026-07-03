@@ -667,8 +667,8 @@ function openPost(url){
     window.open(url,'_blank');
     return;
   }
-  /* Мобильный — openLink не закрывает Mini App */
-  tg.openLink(url,{try_instant_view:false});
+  /* Мобильный — openTelegramLink открывает t.me ссылки внутри Telegram, не в браузере */
+  tg.openTelegramLink(url);
 }
 
 function renderCards(posts,container){
