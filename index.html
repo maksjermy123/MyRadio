@@ -130,7 +130,7 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .pb-l{font-size:13px;color:var(--blue);font-weight:700}
 .pct{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600;color:var(--text2);padding:0 4px 10px}
 .post-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:12px 14px;cursor:pointer;display:block;text-decoration:none;color:inherit;transition:all .18s;margin-bottom:8px;box-shadow:0 1px 5px rgba(0,0,0,.05)}
-.post-card:active{transform:scale(.98);background:#f0f0e8}
+.post-card:active,.post-card.tapped{transform:scale(.98);background:#f0f0e8;opacity:.85}
 .ptt{font-size:13px;font-weight:700;line-height:1.4;margin-bottom:4px}
 .ppv{font-size:11px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px}
 .pmt{display:flex;align-items:center;justify-content:space-between}
@@ -655,20 +655,24 @@ function clearSrch(){
 ── */
 function openPost(url){
   if(!tg){ window.open(url,'_blank'); return; }
-  /* openTelegramLink открывает t.me ссылки внутри Telegram на всех платформах.
-     Работает на desktop (tdesktop/macos) и мобильных (ios/android).
-     Для web/weba открываем в новой вкладке — там нет нативного TG. */
   var plat = tg.platform || '';
+  /* Web-версия Telegram — открываем в новой вкладке */
   if(plat==='web'||plat==='weba'){
     window.open(url,'_blank');
     return;
   }
-  if(typeof tg.openTelegramLink === 'function'){
-    tg.openTelegramLink(url);
+  /* Desktop — openTelegramLink открывает пост внутри TG */
+  if(plat==='tdesktop'||plat==='macos'){
+    if(typeof tg.openTelegramLink==='function') tg.openTelegramLink(url);
+    else window.open(url,'_blank');
     return;
   }
-  /* Fallback для очень старых клиентов */
-  window.open(url,'_blank');
+  /* Мобильный (ios/android) — сначала открываем ссылку, потом закрываем Mini App.
+     Это даёт визуальный переход: пользователь видит что произошёл переход в канал. */
+  if(typeof tg.openTelegramLink==='function') tg.openTelegramLink(url);
+  else window.open(url,'_blank');
+  /* Небольшая задержка чтобы openTelegramLink успел сработать до закрытия */
+  setTimeout(function(){ tg.close(); }, 300);
 }
 
 function renderCards(posts,container){
@@ -676,6 +680,9 @@ function renderCards(posts,container){
   if(!posts.length){container.innerHTML='<div class="toc-empty">Постов не найдено</div>';return;}
   posts.forEach(function(p){
     var a=document.createElement('a'); a.className='post-card'; a.href='#';
+    /* touchstart даёт мгновенный визуальный отклик на iOS где :active срабатывает с задержкой */
+    a.addEventListener('touchstart',function(){ a.classList.add('tapped'); },{passive:true});
+    a.addEventListener('touchend',function(){ setTimeout(function(){a.classList.remove('tapped');},200); },{passive:true});
     a.addEventListener('click',function(e){ e.preventDefault(); openPost(p.url); });
     a.innerHTML='<div class="ptt">'+esc(p.title)+'</div>'
       +(p.preview?'<div class="ppv">'+esc(p.preview)+'</div>':'')
