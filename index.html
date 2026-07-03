@@ -655,20 +655,20 @@ function clearSrch(){
 ── */
 function openPost(url){
   if(!tg){ window.open(url,'_blank'); return; }
+  /* openTelegramLink открывает t.me ссылки внутри Telegram на всех платформах.
+     Работает на desktop (tdesktop/macos) и мобильных (ios/android).
+     Для web/weba открываем в новой вкладке — там нет нативного TG. */
   var plat = tg.platform || '';
-  /* Desktop: tdesktop, macos — открываем через openTelegramLink чтобы остаться в TG */
-  if(plat==='tdesktop'||plat==='macos'){
-    /* Конвертируем t.me ссылку в tg:// для Desktop */
-    tg.openTelegramLink(url);
-    return;
-  }
-  /* Web-версия Telegram (web/weba) — открываем в той же вкладке */
   if(plat==='web'||plat==='weba'){
     window.open(url,'_blank');
     return;
   }
-  /* Мобильный — openTelegramLink открывает t.me ссылки внутри Telegram, не в браузере */
-  tg.openTelegramLink(url);
+  if(typeof tg.openTelegramLink === 'function'){
+    tg.openTelegramLink(url);
+    return;
+  }
+  /* Fallback для очень старых клиентов */
+  window.open(url,'_blank');
 }
 
 function renderCards(posts,container){
