@@ -862,7 +862,15 @@ def should_skip_button(post_tags: list) -> bool:
 
 
 # ── Обработка поста AI ────────────────────────────────────────
-async def process_post(post: dict):
+async def process_post(post: dict, resend_button: bool = True):
+    """
+    resend_button=False позволяет обновить данные поста (bible_refs, цитаты,
+    reflection, related_posts в links.json) БЕЗ отправки нового сообщения
+    с кнопкой «Глубже» в тред — используется при переиндексации поста,
+    у которого кнопка уже стоит на своём месте и трогать её не нужно:
+    сама кнопка ведёт на deeper.html?post_id=..., который всегда подтягивает
+    свежие данные из /links/{post_id}, так что повторно постить её незачем.
+    """
     post_id = post.get("message_id") or post.get("id")
     text = post.get("text", "") or post.get("caption", "")
     if not text or not post_id:
@@ -906,7 +914,10 @@ async def process_post(post: dict):
                     links_data = {}
                 links_data[str(post_id)] = humor_result
                 await github_put(client, GITHUB_LINKS_FILE, links_data, links_sha, f"Humor post {post_id}")
-        await send_deeper_button(post_id)
+        if resend_button:
+            await send_deeper_button(post_id)
+        else:
+            log.info(f"⏭ Пост {post_id} — resend_button=False, кнопку не трогаем")
         log.info(f"😄 Humor post {post_id} saved.")
         return
 
@@ -964,6 +975,10 @@ async def process_post(post: dict):
                              f"links for post {post_id}")
 
     log.info(f"✅ Post {post_id} processed. Related: {result['related_posts']}")
+
+    if not resend_button:
+        log.info(f"⏭ Пост {post_id} — resend_button=False, данные обновлены, кнопку не трогаем")
+        return
 
     # Не отправляем кнопку для первых частей пар (#продолжение) и для #без_глубже
     if should_skip_button(tags):
@@ -1315,7 +1330,15 @@ async def get_links(post_id: int):
 
 @app.post("/analyze/{post_id}")
 @app.get("/analyze/{post_id}")
-async def manual_analyze(post_id: int):
+async def manual_analyze(post_id: int, resend_button: bool = True):
+    """
+    resend_button=false — переиндексировать данные поста (bible_refs, цитаты,
+    reflection, related_posts), НЕ отправляя повторно кнопку «Глубже» в тред.
+    Удобно, если кнопка у поста уже стоит на своём месте и трогать её не нужно —
+    она и так откроет deeper.html, который всегда подтянет свежие данные из
+    /links/{post_id}.
+    Пример: /analyze/424?resend_button=false
+    """
     async with httpx.AsyncClient(timeout=15) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
     if not posts_data:
@@ -1332,8 +1355,13 @@ async def manual_analyze(post_id: int):
         "tags": post.get("tags"),
         "date": 0,
         "chat": {"username": CHANNEL_ID.lstrip("@")}
-    }))
-    return {"ok": True, "message": f"Analysis started for post {post_id}", "text_len": len(text)}
+    }, resend_button=resend_button))
+    return {
+        "ok": True,
+        "message": f"Analysis started for post {post_id}",
+        "text_len": len(text),
+        "resend_button": resend_button,
+    }
 
 
 @app.get("/analyze_range")
