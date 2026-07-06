@@ -380,9 +380,81 @@ def should_process_ai(tags: list) -> bool:
     return bool(non_skip)
 
 
+def extract_tags_from_text(text: str) -> list:
+    return [m.lower() for m in re.findall(r'#\w+', text)]
+
+
+def resolve_post_tags(post: dict) -> list:
+    """
+    Единая точка получения тегов поста: сперва берём уже посчитанные теги
+    (переданные явно, например из analyze_range/analyze_all/analyze/{id}),
+    затем — из entities/caption_entities «живого» апдейта от Telegram,
+    и только в последнюю очередь — грубое извлечение регуляркой из текста.
+    Раньше process_post игнорировал уже переданный tags, из-за чего при
+    пакетной переобработке (не через вебхук) не срабатывали проверки
+    на "#продолжение" и SKIP_BUTTON_TAGS.
+    """
+    explicit = post.get("tags")
+    if explicit:
+        return explicit
+    if "entities" in post or "caption_entities" in post:
+        return extract_hashtags(post)
+    text = post.get("text", "") or post.get("caption", "") or ""
+    return extract_tags_from_text(text)
+
+
+def smart_truncate(text: str, limit: int, ellipsis: str = "…") -> str:
+    """
+    Обрезает текст до limit символов, стараясь не разрывать слово посередине.
+    Используется только для отображаемого текста (например, цитат богословов),
+    и никак не влияет на то, что отправляется в Cohere Rerank — порог и
+    релевантность подбора цитат остаются полностью прежними.
+    """
+    if text is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    # обрезаем по последнему пробелу, если это не отбрасывает слишком много текста
+    if last_space >= int(limit * 0.6):
+        cut = cut[:last_space]
+    return cut.rstrip(" ,;:—-") + ellipsis
+
+
 # ── Парсинг библейских ссылок ─────────────────────────────────
 def normalize_book(name: str) -> str:
     return BOOK_ALIASES.get(name, name)
+
+
+def normalize_book_for_text(name: str) -> str:
+    """
+    Более терпимая нормализация названия книги — используется ТОЛЬКО при
+    получении синодального текста для отображения (fetch_bible_text).
+    Ссылки на bible.by (make_translation_links / parse_ref) продолжают
+    использовать исходную normalize_book() без каких-либо изменений.
+
+    ИИ иногда выдаёт название книги в косвенном падеже (например,
+    "Иеремии" вместо "Иеремия"), из-за чего normalize_book не находит
+    точного совпадения. Здесь мы дополнительно пробуем сопоставить книгу
+    по началу слова (падежные окончания в русском языке короткие),
+    но только если точное совпадение не найдено — то есть для всех уже
+    корректно работающих ссылок поведение остаётся тем же самым.
+    """
+    name = (name or "").strip()
+    canonical = normalize_book(name)
+    if canonical in BOOK_NUM:
+        return canonical
+
+    candidates = list(BOOK_NUM.keys()) + list(BOOK_ALIASES.keys())
+    for cut in (1, 2):
+        if len(name) <= cut + 3:
+            continue
+        stem = name[:-cut]
+        for known in candidates:
+            if known.startswith(stem) and len(stem) >= max(4, len(known) - 3):
+                return normalize_book(known)
+    return canonical
 
 
 def parse_ref(ref: str):
@@ -500,6 +572,10 @@ async def get_theology_db() -> list:
 
 
 async def find_theology_quotes(query: str, top_n: int = 3) -> list:
+    # ВНИМАНИЕ: логика подбора и порога релевантности (top_score < 0.92,
+    # threshold = top_score * 0.85) намеренно оставлена без изменений —
+    # как и объём текста, отправляемого в Cohere Rerank (documents),
+    # чтобы результаты ранжирования полностью совпадали с прежними.
     if not COHERE_API_KEY:
         return []
     try:
@@ -539,7 +615,10 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
             quotes.append({
                 "author": rec["author"],
                 "title": rec.get("title", ""),
-                "text": rec["text"][:500],
+                # Раньше жёсткий срез [:500] более чем в 60% случаев обрывал
+                # цитату прямо посреди слова. Порог/скор при этом не трогаем —
+                # обрезаем только уже ОТОБРАННЫЙ текст для показа пользователю.
+                "text": smart_truncate(rec["text"], 500),
                 "score": round(score, 3)
             })
             if len(quotes) >= top_n:
@@ -559,16 +638,45 @@ async def get_bible_db(client: httpx.AsyncClient):
     global _bible_cache
     if _bible_cache is not None:
         return _bible_cache
-    try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/ru_synodal.json"
-        r = await client.get(url, timeout=30)
-        if r.status_code == 200:
-            _bible_cache = r.json()
-            log.info(f"Bible DB loaded: {len(_bible_cache)} books")
-            return _bible_cache
-    except Exception as e:
-        log.error(f"Bible DB load error: {e}")
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/ru_synodal.json"
+    for attempt in range(2):
+        try:
+            r = await client.get(url, timeout=30)
+            if r.status_code == 200:
+                _bible_cache = r.json()
+                log.info(f"Bible DB loaded: {len(_bible_cache)} books")
+                return _bible_cache
+        except Exception as e:
+            log.error(f"Bible DB load error (attempt {attempt + 1}/2): {e}")
+        if attempt == 0:
+            await asyncio.sleep(1)
     return None
+
+
+async def _get_bible_db_cached():
+    """
+    Отдаёт кэш Библии, при необходимости загружая его один раз.
+    Если книга уже в кэше — клиент httpx вообще не создаётся
+    (раньше он создавался на каждый вызов fetch_bible_text, даже
+    когда кэш уже был заполнен).
+    """
+    global _bible_cache
+    if _bible_cache is None:
+        async with httpx.AsyncClient(timeout=15) as client:
+            await get_bible_db(client)
+    return _bible_cache
+
+
+def _extract_verses(bible: list, book_idx: int, chapter: int, verse_start: int, verse_end: int) -> str:
+    if chapter < 0 or book_idx is None or book_idx >= len(bible):
+        return ""
+    chapters = bible[book_idx].get("chapters", [])
+    if chapter >= len(chapters):
+        return ""
+    selected = chapters[chapter][verse_start:verse_end]
+    if not selected:
+        return ""
+    return " ".join(f"{verse_start + 1 + i} {v}" for i, v in enumerate(selected))
 
 
 async def fetch_bible_text(ref: str) -> str:
@@ -580,18 +688,21 @@ async def fetch_bible_text(ref: str) -> str:
             if not m2:
                 return ""
             chapter = int(m2.group(1)) - 1
-            book_ru = normalize_book(ref[:m2.start()].strip())
+            book_ru = normalize_book_for_text(ref[:m2.start()].strip())
             book_idx = BOOK_JSON_INDEX.get(book_ru)
             if book_idx is None:
                 return ""
-            async with httpx.AsyncClient(timeout=15) as client:
-                bible = await get_bible_db(client)
-            if not bible or chapter >= len(bible[book_idx]["chapters"]):
+            bible = await _get_bible_db_cached()
+            if not bible:
                 return ""
-            verses = bible[book_idx]["chapters"][chapter][:5]
+            chapters = bible[book_idx].get("chapters", [])
+            if chapter >= len(chapters):
+                return ""
+            verses = chapters[chapter][:5]
             return " ".join(f"{i+1} {v}" for i, v in enumerate(verses))
+
         cv = m.group(1)
-        book_ru = normalize_book(ref[:m.start()].strip())
+        book_ru = normalize_book_for_text(ref[:m.start()].strip())
         book_idx = BOOK_JSON_INDEX.get(book_ru)
         if book_idx is None:
             return ""
@@ -604,22 +715,41 @@ async def fetch_bible_text(ref: str) -> str:
         else:
             verse_start = int(verse_str) - 1
             verse_end = verse_start + 1
-        async with httpx.AsyncClient(timeout=15) as client:
-            bible = await get_bible_db(client)
+
+        bible = await _get_bible_db_cached()
         if not bible:
             return ""
-        chapters = bible[book_idx].get("chapters", [])
-        if chapter >= len(chapters):
-            return ""
-        selected = chapters[chapter][verse_start:verse_end]
-        if not selected:
-            return ""
-        return " ".join(f"{verse_start + 1 + i} {v}" for i, v in enumerate(selected))
+
+        text = _extract_verses(bible, book_idx, chapter, verse_start, verse_end)
+
+        # Синодальный перевод Псалтири пронумерован по Септуагинте и начиная
+        # с 10-го псалма на 1 отстаёт от привычной ИИ масоретской/западной
+        # нумерации (напр. англ. "Psalm 119:105" — это Пс.118:105 в Синодальном).
+        # Если по указанному номеру ничего не нашли — пробуем на 1 псалом раньше.
+        # На генерацию ссылок bible.by (make_translation_links) это не влияет.
+        if not text and book_ru in ("Псалтирь", "Псалом") and chapter >= 9:
+            text = _extract_verses(bible, book_idx, chapter - 1, verse_start, verse_end)
+
+        return text
     except Exception as e:
         log.error(f"Bible fetch error for '{ref}': {e}")
+        return ""
 
 
 # ── Groq: анализ поста ────────────────────────────────────────
+def _strip_json_fence(text: str) -> str:
+    """
+    Корректно убирает markdown-обрамление ```json ... ``` вокруг ответа модели.
+    Раньше использовался text.lstrip("```json") — это удаляет с начала строки
+    ЛЮБЫЕ символы из набора {`, j, s, o, n}, а не префикс "```json" целиком,
+    что могло случайно обрезать валидные символы в начале настоящего JSON.
+    """
+    text = text.strip()
+    text = re.sub(r'^```(?:json)?\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+    return text.strip()
+
+
 async def analyze_post(post_text: str, topics: list):
     prompt = GROQ_PROMPT.format(post_text=post_text)
     payload = {
@@ -637,13 +767,13 @@ async def analyze_post(post_text: str, topics: list):
             continue
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
-        text = text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        text = _strip_json_fence(text)
         return json.loads(text)
     raise Exception("Groq rate limit: все 3 попытки исчерпаны")
 
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
-async def send_deeper_button(post_id: int, use_web_app: bool = False):
+async def send_deeper_button(post_id: int):
     """Отправляет кнопку «Глубже» в тред поста в чате комментариев."""
     bot_username = BOT_USERNAME.lstrip("@")
     miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={post_id}"
@@ -721,14 +851,32 @@ async def send_deeper_button(post_id: int, use_web_app: bool = False):
             log.error(f"❌ sendMessage для поста {post_id}: {desc}")
 
 
+def should_skip_button(post_tags: list) -> bool:
+    """Единая проверка: нужно ли пропустить постановку кнопки «Глубже»."""
+    tags = post_tags or []
+    if "#продолжение" in tags:
+        return True
+    if set(tags) & SKIP_BUTTON_TAGS:
+        return True
+    return False
+
+
 # ── Обработка поста AI ────────────────────────────────────────
-async def process_post(post: dict):
+async def process_post(post: dict, resend_button: bool = True):
+    """
+    resend_button=False позволяет обновить данные поста (bible_refs, цитаты,
+    reflection, related_posts в links.json) БЕЗ отправки нового сообщения
+    с кнопкой «Глубже» в тред — используется при переиндексации поста,
+    у которого кнопка уже стоит на своём месте и трогать её не нужно:
+    сама кнопка ведёт на deeper.html?post_id=..., который всегда подтягивает
+    свежие данные из /links/{post_id}, так что повторно постить её незачем.
+    """
     post_id = post.get("message_id") or post.get("id")
     text = post.get("text", "") or post.get("caption", "")
     if not text or not post_id:
         return
 
-    tags = extract_hashtags(post) if ("entities" in post or "caption_entities" in post) else []
+    tags = resolve_post_tags(post)
     topics = hashtags_to_topics(tags) if tags else post.get("topics", [])
     if not topics:
         log.info(f"process_post {post_id}: нет тем — пропускаем")
@@ -766,7 +914,10 @@ async def process_post(post: dict):
                     links_data = {}
                 links_data[str(post_id)] = humor_result
                 await github_put(client, GITHUB_LINKS_FILE, links_data, links_sha, f"Humor post {post_id}")
-        await send_deeper_button(post_id, use_web_app=True)
+        if resend_button:
+            await send_deeper_button(post_id)
+        else:
+            log.info(f"⏭ Пост {post_id} — resend_button=False, кнопку не трогаем")
         log.info(f"😄 Humor post {post_id} saved.")
         return
 
@@ -825,14 +976,16 @@ async def process_post(post: dict):
 
     log.info(f"✅ Post {post_id} processed. Related: {result['related_posts']}")
 
-    # Не отправляем кнопку для первых частей пар (#продолжение)
-    post_tags = tags
-    if "#продолжение" in (post_tags or []):
-        log.info(f"⏭ Пост {post_id} — #продолжение, кнопку не ставим (поставим на следующем)")
-    elif set(post_tags) & SKIP_BUTTON_TAGS:
-        log.info(f"⏭ Пост {post_id} — тег {set(post_tags) & SKIP_BUTTON_TAGS}, кнопка отключена автором")
+    if not resend_button:
+        log.info(f"⏭ Пост {post_id} — resend_button=False, данные обновлены, кнопку не трогаем")
+        return
+
+    # Не отправляем кнопку для первых частей пар (#продолжение) и для #без_глубже
+    if should_skip_button(tags):
+        skipped_by = set(tags) & (SKIP_BUTTON_TAGS | {"#продолжение"})
+        log.info(f"⏭ Пост {post_id} — тег {skipped_by}, кнопка «Глубже» отключена")
     else:
-        await send_deeper_button(post_id, use_web_app=True)
+        await send_deeper_button(post_id)
 
 
 # ── posts.json: добавление/обновление ────────────────────────
@@ -936,7 +1089,11 @@ def verify_telegram_init_data(init_data, bot_token, *, max_age_seconds=86400):
     if not user_data:
         return None
     try:
-        user = json.loads(unquote(user_data))
+        # parse_qsl уже один раз декодирует percent-encoding, поэтому
+        # повторный unquote() здесь был лишним и мог испортить JSON,
+        # если в данных пользователя случайно встречалась подстрока
+        # вида "%xx" (например, в username).
+        user = json.loads(user_data)
     except json.JSONDecodeError:
         return None
     return {"user": user, "auth_date": auth_date}
@@ -1173,7 +1330,15 @@ async def get_links(post_id: int):
 
 @app.post("/analyze/{post_id}")
 @app.get("/analyze/{post_id}")
-async def manual_analyze(post_id: int):
+async def manual_analyze(post_id: int, resend_button: bool = True):
+    """
+    resend_button=false — переиндексировать данные поста (bible_refs, цитаты,
+    reflection, related_posts), НЕ отправляя повторно кнопку «Глубже» в тред.
+    Удобно, если кнопка у поста уже стоит на своём месте и трогать её не нужно —
+    она и так откроет deeper.html, который всегда подтянет свежие данные из
+    /links/{post_id}.
+    Пример: /analyze/424?resend_button=false
+    """
     async with httpx.AsyncClient(timeout=15) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
     if not posts_data:
@@ -1187,10 +1352,16 @@ async def manual_analyze(post_id: int):
         "message_id": post_id,
         "text": text,
         "topics": topics,
+        "tags": post.get("tags"),
         "date": 0,
         "chat": {"username": CHANNEL_ID.lstrip("@")}
-    }))
-    return {"ok": True, "message": f"Analysis started for post {post_id}", "text_len": len(text)}
+    }, resend_button=resend_button))
+    return {
+        "ok": True,
+        "message": f"Analysis started for post {post_id}",
+        "text_len": len(text),
+        "resend_button": resend_button,
+    }
 
 
 @app.get("/analyze_range")
@@ -1331,11 +1502,6 @@ async def reindex_all():
             await github_put(client, GITHUB_FILE, posts_data, sha,
                              f"reindex: added {updated} embeddings")
     return {"ok": True, "updated": updated, "total": len(posts_data.get("posts", []))}
-
-
-def extract_tags_from_text(text: str) -> list:
-    import re
-    return [m.lower() for m in re.findall(r'#\w+', text)]
 
 
 @app.get("/reindex_all")
@@ -1496,7 +1662,7 @@ async def cleanup(delay: float = 1.0):
 
             should_have_button = (
                 should_process_ai(post_tags)
-                and "#продолжение" not in post_tags
+                and not should_skip_button(post_tags)
                 and str(pid) in links_data
             )
 
@@ -1556,7 +1722,7 @@ async def update_buttons(delay: float = 1.5):
             post.get("text","") or post.get("preview",""))
         if str(pid) not in links_data:
             continue
-        if not should_process_ai(post_tags) or "#продолжение" in post_tags:
+        if not should_process_ai(post_tags) or should_skip_button(post_tags):
             continue
         queued.append(pid)
 
