@@ -339,6 +339,7 @@ var CAT_C = {
   '🙏 Молитва и духовная жизнь': {bg:'#d8f4ec',txt:'#085840',bdr:'#28a870'},
   '🌱 Христианская жизнь':       {bg:'#e8f8d8',txt:'#286010',bdr:'#58b828'},
   '💬 Размышления и цитаты':     {bg:'#dce0f8',txt:'#182878',bdr:'#4858d8'},
+  '📚 Достоевский':               {bg:'#f0f0f0',txt:'#282828',bdr:'#787878'},
   '📚 Книги и авторы':            {bg:'#f8f0d8',txt:'#583808',bdr:'#d88818'},
   '📅 Челлендж: Лука':            {bg:'#f8dce0',txt:'#680818',bdr:'#d83848'},
   '📔 Духовный дневник':          {bg:'#fff3d8',txt:'#683808',bdr:'#e88028'},
@@ -346,11 +347,9 @@ var CAT_C = {
   '🏛️ История и церковь':        {bg:'#f0ebe8',txt:'#3a1808',bdr:'#9a5838'},
   '🎄 Праздники':                 {bg:'#e8f8e0',txt:'#185010',bdr:'#48b828'},
   '😄 Юмор':                      {bg:'#fffad8',txt:'#5a4000',bdr:'#e8b800'},
+  '📰 Новости':                   {bg:'#fff8d8',txt:'#583800',bdr:'#d89800'},
   '📻 Анонсы канала':             {bg:'#d8f0f8',txt:'#084868',bdr:'#28a0d8'},
 };
-/* Резервный цвет для категорий, которых нет в CAT_C выше
-   (например, новый хэштег, ещё не внесённый в карту цветов на фронте) */
-var CAT_FALLBACK = {bg:'#f0f0f0', txt:'#333', bdr:'#aaa'};
 
 var tg = (window.Telegram&&window.Telegram.WebApp)?window.Telegram.WebApp:null;
 var aud = document.getElementById('aud');
@@ -376,10 +375,7 @@ if (tg) {
   });
 }
 
-/* ── TABS ──
-   Обе вкладки-кнопки таб-бара переключаются через один и тот же метод,
-   поэтому «активная» кнопка/контент всегда синхронизированы между собой —
-   в том числе и при первом открытии по диплинку (см. showMain -> getStartTab). */
+/* ── TABS ── */
 function switchTab(tab){
   curTab=tab;
   ['toc','radio'].forEach(function(t){
@@ -600,7 +596,7 @@ function loadTOC(){
 function renderCats(){
   var grid=document.getElementById('cat-grid'); grid.innerHTML='';
   (tocData.topics||[]).forEach(function(t,i){
-    var c=CAT_C[t.name]||CAT_FALLBACK;
+    var c=CAT_C[t.name]||{bg:'#f0f0f0',txt:'#333',bdr:'#aaa'};
     var card=document.createElement('div'); card.className='cat-card';
     card.style.cssText='background:'+c.bg+';border-color:'+c.bdr+'55;animation-delay:'+(i*.04)+'s';
     var ico=(t.name.match(/^(\S+)\s/)||['','📌'])[1];
@@ -711,12 +707,10 @@ function showMain(){
     document.getElementById('ls').style.display='none';
     document.getElementById('ms').classList.add('vis');
     var tab = getStartTab();
-    /* switchTab сам корректно проставляет/снимает .active на ОБЕИХ вкладках
-       (а не только добавляет её текущей) — раньше при диплинке #radio
-       кнопка "Оглавление" оставалась подсвеченной как активная, потому что
-       в разметке у неё изначально стоит класс active, а сюда добавлялась
-       ещё и активность "Радио", без снятия первой. */
-    switchTab(tab);
+    document.getElementById(tab+'-tab').classList.add('active');
+    document.getElementById('tb-'+tab).classList.add('active');
+    if(tab==='toc') loadTOC();
+    else renderStns();
   },450);
 }
 function showDenied(reason){
