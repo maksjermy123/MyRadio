@@ -145,6 +145,11 @@
       text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;
     }
     .theology-title { font-size:0.72rem; color:var(--muted); margin-bottom:8px; }
+    /* Поле title в базе богословских цитат сейчас всегда пустое —
+       раньше пустой <div> всё равно резервировал под себя 8px отступа.
+       :empty скрывает такой блок, но ничего не меняет, если title
+       когда-нибудь появится в данных. */
+    .theology-title:empty { display:none; margin:0; }
     .theology-text {
       font-family:Georgia,'Times New Roman',serif; font-size:1rem; line-height:1.65;
       font-style:italic; color:var(--text); padding:8px 11px;
