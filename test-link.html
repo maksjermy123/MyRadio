@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<title>Тест: переход на пост</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{
+    font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;
+    background:#f5f0e8;color:#1a1208;margin:0;padding:16px;
+  }
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{font-size:13px;color:#6d5a3a;margin-bottom:18px}
+  .info{
+    background:#fffdf8;border:1px solid rgba(100,70,20,.14);border-radius:12px;
+    padding:12px 14px;margin-bottom:18px;font-size:13px;line-height:1.7;
+  }
+  .info b{color:#1b5e20}
+  .row{display:flex;justify-content:space-between;gap:8px}
+  .test{
+    background:#fffdf8;border:1px solid rgba(100,70,20,.14);border-radius:14px;
+    padding:16px;margin-bottom:14px;
+  }
+  .test h2{font-size:15px;margin:0 0 6px}
+  .test p{font-size:13px;color:#6d5a3a;margin:0 0 12px;line-height:1.5}
+  button{
+    width:100%;padding:14px;border:none;border-radius:12px;
+    font-size:15px;font-weight:700;cursor:pointer;color:#fff;
+  }
+  .btn-openlink{background:#e65100}
+  .btn-tglink{background:#2e7d32}
+  .log{
+    margin-top:18px;background:#111;color:#0f0;font-family:monospace;
+    font-size:11px;border-radius:10px;padding:10px 12px;min-height:60px;
+    white-space:pre-wrap;word-break:break-word;
+  }
+  .warn{background:#fff3d8;border:1px solid #e88028;border-radius:12px;padding:10px 14px;font-size:12px;margin-bottom:18px}
+</style>
+</head>
+<body>
+
+<h1>🧪 Тест перехода на пост</h1>
+<div class="sub">Сравниваем openLink() и openTelegramLink() на вашем устройстве</div>
+
+<div class="warn" id="oldwarn" style="display:none">
+  ⚠️ Похоже, страница открыта НЕ внутри Telegram (window.Telegram.WebApp недоступен).
+  Откройте эту ссылку из Telegram, иначе методы ниже не сработают.
+</div>
+
+<div class="info" id="info">Загрузка данных о клиенте...</div>
+
+<div class="test">
+  <h2>1️⃣ openLink (как сейчас на мобильных)</h2>
+  <p>Ожидаемое поведение: уходит во внешний/встроенный браузер, оттуда — обратно в Telegram на пост.</p>
+  <button class="btn-openlink" onclick="testOpenLink()">Открыть через openLink</button>
+</div>
+
+<div class="test">
+  <h2>2️⃣ openTelegramLink (как сейчас на десктопе)</h2>
+  <p>Ожидаемое поведение: сразу открывает пост внутри Telegram, без браузера, мини-апп не закрывается.</p>
+  <button class="btn-tglink" onclick="testOpenTelegramLink()">Открыть через openTelegramLink</button>
+</div>
+
+<div class="log" id="log">Лог событий появится здесь...</div>
+
+<script>
+var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+var TEST_POST_URL = 'https://t.me/Chtenie_Preobrazenie/366'; // возьмите любой реальный пост своего канала
+
+var logEl = document.getElementById('log');
+function log(msg){
+  var t = new Date().toLocaleTimeString();
+  logEl.textContent += '['+t+'] ' + msg + '\n';
+}
+
+if (tg){
+  tg.ready();
+  tg.expand();
+  var infoHtml = ''
+    + '<div class="row"><span>Платформа (tg.platform)</span><b>' + tg.platform + '</b></div>'
+    + '<div class="row"><span>Версия Bot API (tg.version)</span><b>' + tg.version + '</b></div>'
+    + '<div class="row"><span>isVersionAtLeast(\'7.0\')</span><b>' + (tg.isVersionAtLeast ? tg.isVersionAtLeast('7.0') : 'метод недоступен') + '</b></div>'
+    + '<div class="row"><span>openTelegramLink доступен?</span><b>' + (typeof tg.openTelegramLink === 'function' ? 'да' : 'НЕТ') + '</b></div>';
+  document.getElementById('info').innerHTML = infoHtml;
+  log('Telegram.WebApp инициализирован. platform=' + tg.platform + ', version=' + tg.version);
+} else {
+  document.getElementById('oldwarn').style.display = 'block';
+  document.getElementById('info').textContent = 'window.Telegram.WebApp недоступен — страница открыта не как Mini App.';
+}
+
+function testOpenLink(){
+  log('Нажата кнопка "openLink" → ' + TEST_POST_URL);
+  if (!tg){ log('tg недоступен, пробую window.open()'); window.open(TEST_POST_URL,'_blank'); return; }
+  try{
+    tg.openLink(TEST_POST_URL, {try_instant_view:false});
+    log('tg.openLink() вызван без ошибок.');
+  }catch(e){ log('ОШИБКА: ' + e.message); }
+}
+
+function testOpenTelegramLink(){
+  log('Нажата кнопка "openTelegramLink" → ' + TEST_POST_URL);
+  if (!tg){ log('tg недоступен, openTelegramLink невозможен вне Telegram'); return; }
+  try{
+    tg.openTelegramLink(TEST_POST_URL);
+    log('tg.openTelegramLink() вызван без ошибок. Если мини-апп сейчас закрылся — вы этот лог уже не увидите (это тоже важный результат теста!).');
+  }catch(e){ log('ОШИБКА: ' + e.message); }
+}
+
+// Если мини-апп сворачивается/закрывается, это событие поможет это заметить,
+// когда вы вернётесь и посмотрите на консоль/лог (если он вообще сохранится)
+document.addEventListener('visibilitychange', function(){
+  log('visibilitychange → document.hidden = ' + document.hidden);
+});
+</script>
+</body>
+</html>
