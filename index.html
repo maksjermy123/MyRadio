@@ -689,11 +689,58 @@ function openPost(url){
     && (!tg.isVersionAtLeast || tg.isVersionAtLeast('7.0'));
 
   if (NATIVE_APP_PLATFORMS[plat] && canUseTelegramLink){
-    tg.openTelegramLink(url);
+    openViaTelegramLinkWithFallback(url);
     return;
   }
 
   tg.openLink(url,{try_instant_view:false});
+}
+
+/*
+  Известная особенность Telegram на iOS (подтверждено вживую 08.07.2026
+  через Safari Web Inspector на реальном устройстве): если мини-апп
+  запущен ИЗ ТОГО ЖЕ канала, на пост которого ведёт ссылка (например,
+  кнопка «Открыть» в закрепе самого канала «От чтения к Преображению»),
+  openTelegramLink() не выполняет видимый переход — нет ни вибрации,
+  ни сворачивания мини-аппа. При этом событие web_app_open_tg_link
+  уходит в нативный слой одинаково что при удачном переходе (другой
+  чат/из чата с ботом), что при неудачном — и сама навигация в фоне
+  всё равно происходит корректно (после принудительного закрытия
+  мини-аппа нужный пост уже открыт). Проблема — именно в отсутствии
+  видимого foreground-перехода, когда host-чат мини-аппа совпадает
+  с целевым чатом ссылки. На Android и при переходе в другой чат
+  на iOS всё работает штатно и мгновенно.
+
+  Прямого способа спросить у Telegram «получилось ли на самом деле» —
+  нет, поэтому используем document.visibilitychange как индикатор:
+  если за TG_LINK_FALLBACK_MS мини-апп так и не свернулся — считаем,
+  что случился тот самый тихий сбой, и подстраховываемся уже проверенным
+  openLink() (даст видимый переход через браузер, но гарантированно
+  рабочий). Решение самовосстанавливающееся: если Telegram когда-нибудь
+  починит эту особенность на своей стороне, visibilitychange будет
+  срабатывать быстро, и запасной openLink() просто никогда не вызовется.
+*/
+var TG_LINK_FALLBACK_MS = 700;
+
+function openViaTelegramLinkWithFallback(url){
+  var settled = false;
+
+  function onVisChange(){
+    if (document.hidden){
+      settled = true;
+      document.removeEventListener('visibilitychange', onVisChange);
+    }
+  }
+  document.addEventListener('visibilitychange', onVisChange);
+
+  tg.openTelegramLink(url);
+
+  setTimeout(function(){
+    document.removeEventListener('visibilitychange', onVisChange);
+    if (!settled){
+      tg.openLink(url, {try_instant_view:false});
+    }
+  }, TG_LINK_FALLBACK_MS);
 }
 
 function renderCards(posts,container){
