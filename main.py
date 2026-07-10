@@ -1953,16 +1953,14 @@ SB_HEADERS = {
     "Prefer": "return=representation",
 }
 MSK = ZoneInfo("Europe/Moscow")
-SLOT_HOURS = {"morning": 8, "afternoon": 13, "evening": 20}
 
-# Scheduler defined HERE — before startup event
 bible_scheduler = AsyncIOScheduler(timezone=MSK)
 
 @app.on_event("startup")
 async def bible_scheduler_startup():
     bible_scheduler.start()
 
-# ── Supabase ──────────────────────────────────────────────────
+# ── Supabase: plan_progress ────────────────────────────────────
 
 async def sb_get(user_id: int):
     async with httpx.AsyncClient() as client:
@@ -1991,7 +1989,7 @@ async def sb_patch(user_id: int, payload: dict):
             json=payload,
         )
 
-async def sb_get_slot(slot: str) -> list:
+async def sb_get_hour(hour: int) -> list:
     from datetime import date
     today = date.today().isoformat()
     async with httpx.AsyncClient() as client:
@@ -1999,13 +1997,33 @@ async def sb_get_slot(slot: str) -> list:
             f"{SUPABASE_URL}/rest/v1/plan_progress",
             headers=SB_HEADERS,
             params={
-                "notify_slot": f"eq.{slot}",
+                "notify_hour_msk": f"eq.{hour}",
                 "notify_on": "eq.true",
                 "last_read_date": f"neq.{today}",
                 "select": "user_id,plan_id,streak",
             },
         )
         return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
+
+# ── Supabase: app_state (единый аккаунт на всех устройствах) ──
+
+async def sb_state_get(user_id: int):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/app_state",
+            headers=SB_HEADERS,
+            params={"user_id": f"eq.{user_id}", "limit": "1"},
+        )
+        data = r.json()
+        return data[0] if isinstance(data, list) and data else None
+
+async def sb_state_upsert(user_id: int, data: dict):
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{SUPABASE_URL}/rest/v1/app_state",
+            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json={"user_id": user_id, "data": data},
+        )
 
 # ── Telegram ──────────────────────────────────────────────────
 
@@ -2016,14 +2034,22 @@ async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
     async with httpx.AsyncClient() as client:
         await client.post(f"{BIBLE_API}/sendMessage", json=payload)
 
-def bible_app_button() -> dict:
-    return {"inline_keyboard": [[
-        {"text": "📖 Открыть план чтения", "web_app": {"url": BIBLE_PAGES_URL}},
-    ], [
-        {"text": f"📻 {CHANNEL_NAME}", "url": CHANNEL_LINK},
-    ]]}
+CHANNEL_BTN_TEXT = f"📻 {CHANNEL_NAME}"
+
+def bible_persistent_keyboard() -> dict:
+    """Постоянная клавиатура внизу чата — остаётся у пользователя после первого /start,
+    больше никогда не нужно вводить команду вручную."""
+    return {
+        "keyboard": [
+            [{"text": "📖 Открыть план чтения", "web_app": {"url": BIBLE_PAGES_URL}}],
+            [{"text": CHANNEL_BTN_TEXT}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
 
 def bible_reminder_button() -> dict:
+    """Инлайн-кнопки только для сообщений-напоминаний (не влияют на постоянную клавиатуру)."""
     return {"inline_keyboard": [[
         {"text": "📖 Открыть план", "web_app": {"url": BIBLE_PAGES_URL}},
     ], [
@@ -2035,7 +2061,7 @@ def bible_reminder_button() -> dict:
 class BibleRegisterBody(BaseModel):
     user_id: int
     plan_id: str
-    notify_slot: str = "morning"
+    notify_hour_msk: int = 8
     notify_on: bool = True
 
 class BibleReadBody(BaseModel):
@@ -2044,10 +2070,14 @@ class BibleReadBody(BaseModel):
 
 class BibleSettingsBody(BaseModel):
     user_id: int
-    notify_slot: str
+    notify_hour_msk: int
     notify_on: bool
 
-# ── Endpoints ─────────────────────────────────────────────────
+class StateBody(BaseModel):
+    user_id: int
+    data: dict
+
+# ── Endpoints: планы чтения ────────────────────────────────────
 
 @app.post("/plan/register")
 async def bible_register(body: BibleRegisterBody):
@@ -2056,7 +2086,7 @@ async def bible_register(body: BibleRegisterBody):
         "user_id": body.user_id,
         "plan_id": body.plan_id,
         "start_date": date.today().isoformat(),
-        "notify_slot": body.notify_slot,
+        "notify_hour_msk": body.notify_hour_msk,
         "notify_on": body.notify_on,
         "streak": 0, "max_streak": 0,
         "last_read_date": None, "days_done": [],
@@ -2097,10 +2127,26 @@ async def bible_read(body: BibleReadBody):
 @app.post("/plan/settings")
 async def bible_settings(body: BibleSettingsBody):
     await sb_patch(body.user_id, {
-        "notify_slot": body.notify_slot,
+        "notify_hour_msk": body.notify_hour_msk,
         "notify_on": body.notify_on,
     })
     return {"ok": True}
+
+# ── Endpoints: единый аккаунт (полное состояние приложения) ──
+
+@app.get("/state")
+async def get_state(user_id: int):
+    row = await sb_state_get(user_id)
+    if not row:
+        return {"exists": False}
+    return {"exists": True, "data": row.get("data"), "updated_at": row.get("updated_at")}
+
+@app.post("/state")
+async def save_state(body: StateBody):
+    await sb_state_upsert(body.user_id, body.data)
+    return {"ok": True}
+
+# ── Webhook ───────────────────────────────────────────────────
 
 @app.post("/webhook/bible")
 async def bible_webhook(request: Request):
@@ -2115,14 +2161,22 @@ async def bible_webhook(request: Request):
     text = message.get("text", "")
     if not chat_id:
         return {"ok": True}
+
     if text.startswith("/start"):
         await bible_send(
             chat_id,
-            "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥\n\nВыбери удобный план и начни сегодня:",
-            bible_app_button(),
+            "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥\n\nВыбери удобный план и начни сегодня. Кнопки внизу останутся всегда под рукой 👇",
+            bible_persistent_keyboard(),
+        )
+    elif text == CHANNEL_BTN_TEXT:
+        await bible_send(
+            chat_id,
+            f"📻 Канал «{CHANNEL_NAME}»",
+            {"inline_keyboard": [[{"text": "Перейти →", "url": CHANNEL_LINK}]]},
         )
     else:
-        await bible_send(chat_id, "Открой план чтения 👇", bible_app_button())
+        # Любой другой текст — просто напоминаем про кнопки, сохраняя клавиатуру
+        await bible_send(chat_id, "Используй кнопки внизу 👇", bible_persistent_keyboard())
     return {"ok": True}
 
 @app.get("/bible/status")
@@ -2130,23 +2184,19 @@ async def bible_health():
     return {"ok": True, "bible_bot": BIBLE_BOT_USERNAME,
             "supabase": bool(SUPABASE_URL), "pages": BIBLE_PAGES_URL}
 
-# ── Scheduler ─────────────────────────────────────────────────
+# ── Scheduler: проверяем каждый час, кому пора напомнить ──────
 
 @bible_scheduler.scheduled_job("cron", minute=0)
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return
-    now_msk = datetime.now(MSK)
-    current_hour = now_msk.hour
-    for slot, hour in SLOT_HOURS.items():
-        if current_hour != hour:
-            continue
-        users = await sb_get_slot(slot)
-        for u in users:
-            streak = u.get("streak", 0)
-            streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
-            await bible_send(
-                u["user_id"],
-                f"📅 Время читать Библию\n{streak_text}",
-                bible_reminder_button(),
-            )
+    current_hour = datetime.now(MSK).hour
+    users = await sb_get_hour(current_hour)
+    for u in users:
+        streak = u.get("streak", 0)
+        streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
+        await bible_send(
+            u["user_id"],
+            f"📅 Время читать Библию\n{streak_text}",
+            bible_reminder_button(),
+        )
