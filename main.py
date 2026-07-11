@@ -2036,22 +2036,45 @@ async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
 
 CHANNEL_BTN_TEXT = f"📻 {CHANNEL_NAME}"
 
-def bible_persistent_keyboard() -> dict:
-    """Постоянная клавиатура внизу чата — остаётся у пользователя после первого /start,
-    больше никогда не нужно вводить команду вручную."""
+def _bible_url() -> str:
+    """Добавляем метку времени к ссылке — иначе Telegram кэширует старую версию
+    Mini App и не подгружает свежий index.html после обновлений (подтверждено
+    на реальных устройствах: 10.07.2026 разные платформы показывали разные,
+    несинхронизированные данные из-за того, что нативные приложения держали
+    закэшированную старую версию index.html)."""
+    import time
+    return f"{BIBLE_PAGES_URL}?v={int(time.time())}"
+
+BIBLE_WELCOME_TEXT = (
+    "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥"
+    "\n\nВыбери удобный план и начни сегодня:"
+)
+
+def bible_welcome_buttons() -> dict:
+    """Инлайн-кнопки, прикреплённые к приветственному сообщению (не влияют
+    на постоянную клавиатуру внизу — это независимый слой интерфейса)."""
+    return {"inline_keyboard": [[
+        {"text": "📖 Открыть план чтения", "web_app": {"url": _bible_url()}},
+    ], [
+        {"text": CHANNEL_BTN_TEXT, "url": CHANNEL_LINK},
+    ]]}
+
+def bible_start_keyboard() -> dict:
+    """Постоянная клавиатура внизу чата с единственной кнопкой «Старт».
+    Нажатие равносильно команде /start: бот заново присылает приветственное
+    сообщение с рабочими кнопками — не нужно помнить команды Telegram
+    или искать старое сообщение в истории переписки."""
     return {
-        "keyboard": [
-            [{"text": "📖 Открыть план чтения", "web_app": {"url": BIBLE_PAGES_URL}}],
-            [{"text": CHANNEL_BTN_TEXT}],
-        ],
+        "keyboard": [[{"text": "Старт"}]],
         "resize_keyboard": True,
         "is_persistent": True,
     }
 
 def bible_reminder_button() -> dict:
-    """Инлайн-кнопки только для сообщений-напоминаний (не влияют на постоянную клавиатуру)."""
+    """Инлайн-кнопки только для сообщений-напоминаний (не влияют на постоянную клавиатуру).
+    Расписание и логика напоминаний не менялись — только cache-busting ссылка ниже."""
     return {"inline_keyboard": [[
-        {"text": "📖 Открыть план", "web_app": {"url": BIBLE_PAGES_URL}},
+        {"text": "📖 Открыть план", "web_app": {"url": _bible_url()}},
     ], [
         {"text": f"📻 Канал: {CHANNEL_NAME}", "url": CHANNEL_LINK},
     ]]}
@@ -2158,25 +2181,15 @@ async def bible_webhook(request: Request):
     if not message:
         return {"ok": True}
     chat_id = message.get("chat", {}).get("id")
-    text = message.get("text", "")
     if not chat_id:
         return {"ok": True}
 
-    if text.startswith("/start"):
-        await bible_send(
-            chat_id,
-            "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥\n\nВыбери удобный план и начни сегодня. Кнопки внизу останутся всегда под рукой 👇",
-            bible_persistent_keyboard(),
-        )
-    elif text == CHANNEL_BTN_TEXT:
-        await bible_send(
-            chat_id,
-            f"📻 Канал «{CHANNEL_NAME}»",
-            {"inline_keyboard": [[{"text": "Перейти →", "url": CHANNEL_LINK}]]},
-        )
-    else:
-        # Любой другой текст — просто напоминаем про кнопки, сохраняя клавиатуру
-        await bible_send(chat_id, "Используй кнопки внизу 👇", bible_persistent_keyboard())
+    # Любое сообщение в личке с ботом — будь то /start, нажатие постоянной
+    # кнопки «Старт» или вообще что угодно ещё — приводит к одному и тому же
+    # результату. Пользователю не нужно разбираться в командах Telegram:
+    # что бы он ни отправил, он снова увидит приветствие с рабочими кнопками.
+    await bible_send(chat_id, BIBLE_WELCOME_TEXT, bible_welcome_buttons())
+    await bible_send(chat_id, "Кнопка «Старт» всегда под рукой внизу 👇", bible_start_keyboard())
     return {"ok": True}
 
 @app.get("/bible/status")
