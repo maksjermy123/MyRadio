@@ -1944,6 +1944,13 @@ SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_KEY", "")
 CHANNEL_LINK       = os.environ.get("CHANNEL_LINK", "https://t.me/Chtenie_Preobrazenie")
 CHANNEL_NAME       = os.environ.get("CHANNEL_NAME", "От чтения к Преображению")
+# Telegram user_id (не username!) через запятую — те, кому в личке с ботом
+# доступна команда /stats со статистикой пользователей. Узнать свой user_id
+# можно, например, у бота @userinfobot. Если переменная не задана — команда
+# /stats никому не отвечает (по умолчанию отключена, ничего не ломает).
+BIBLE_ADMIN_USER_IDS = {
+    int(x) for x in os.environ.get("BIBLE_ADMIN_USER_IDS", "").replace(" ", "").split(",") if x
+}
 
 BIBLE_API  = f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}"
 SB_HEADERS = {
@@ -2005,6 +2012,47 @@ async def sb_get_hour(hour: int) -> list:
         )
         return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
+async def _sb_count(client: httpx.AsyncClient, extra_params: dict) -> int:
+    """Считает строки в plan_progress через PostgREST Prefer: count=exact —
+    сам запрос данные не гоняет (select=user_id минимален), интересен только
+    заголовок Content-Range вида '0-24/137', откуда и берём итоговое число."""
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers={**SB_HEADERS, "Prefer": "count=exact"},
+        params={"select": "user_id", **extra_params},
+    )
+    cr = r.headers.get("content-range", "")
+    if "/" in cr:
+        try:
+            return int(cr.rsplit("/", 1)[-1])
+        except ValueError:
+            pass
+    try:
+        return len(r.json())
+    except Exception:
+        return 0
+
+async def bible_collect_stats() -> dict:
+    """Статистика для /stats: сколько всего когда-либо зарегистрировали план
+    (каждая строка plan_progress — один пользователь, upsert по user_id),
+    сколько реально читали за последние 7 дней и сегодня, у скольких включены
+    напоминания. «Активность» намеренно посчитана по факту чтения, а не по
+    самому наличию строки — просто открыть бота один раз не значит читать."""
+    from datetime import date, timedelta
+    today = date.today().isoformat()
+    week_ago = (date.today() - timedelta(days=7)).isoformat()
+    async with httpx.AsyncClient() as client:
+        total          = await _sb_count(client, {})
+        active_today   = await _sb_count(client, {"last_read_date": f"eq.{today}"})
+        active_7d      = await _sb_count(client, {"last_read_date": f"gte.{week_ago}"})
+        notify_enabled = await _sb_count(client, {"notify_on": "eq.true"})
+    return {
+        "total": total,
+        "active_today": active_today,
+        "active_7d": active_7d,
+        "notify_enabled": notify_enabled,
+    }
+
 # ── Supabase: app_state (единый аккаунт на всех устройствах) ──
 
 async def sb_state_get(user_id: int):
@@ -2034,8 +2082,6 @@ async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
     async with httpx.AsyncClient() as client:
         await client.post(f"{BIBLE_API}/sendMessage", json=payload)
 
-CHANNEL_BTN_TEXT = f"📻 {CHANNEL_NAME}"
-
 def _bible_url() -> str:
     """Добавляем метку времени к ссылке — иначе Telegram кэширует старую версию
     Mini App и не подгружает свежий index.html после обновлений (подтверждено
@@ -2048,24 +2094,20 @@ def _bible_url() -> str:
 BIBLE_WELCOME_TEXT = (
     "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥"
     "\n\nВыбери удобный план и начни сегодня:"
+    f"\n\n📻 <a href=\"{CHANNEL_LINK}\">{CHANNEL_NAME}</a>"
 )
 
-def bible_welcome_buttons() -> dict:
-    """Инлайн-кнопки, прикреплённые к приветственному сообщению (не влияют
-    на постоянную клавиатуру внизу — это независимый слой интерфейса)."""
-    return {"inline_keyboard": [[
-        {"text": "📖 Открыть план чтения", "web_app": {"url": _bible_url()}},
-    ], [
-        {"text": CHANNEL_BTN_TEXT, "url": CHANNEL_LINK},
-    ]]}
-
 def bible_start_keyboard() -> dict:
-    """Постоянная клавиатура внизу чата с единственной кнопкой «Старт».
-    Нажатие равносильно команде /start: бот заново присылает приветственное
-    сообщение с рабочими кнопками — не нужно помнить команды Telegram
-    или искать старое сообщение в истории переписки."""
+    """Единственная постоянная клавиатура внизу чата — сразу с обеими рабочими
+    кнопками. «Старт» пересылает приветственное сообщение заново — вместе
+    с ним клавиатура переустанавливается целиком, поэтому ссылка в кнопке
+    «Открыть план чтения» каждый раз обновляется свежей меткой времени
+    (см. _bible_url) и не залипает на старой закэшированной версии Mini App."""
     return {
-        "keyboard": [[{"text": "Старт"}]],
+        "keyboard": [
+            [{"text": "📖 Открыть план чтения", "web_app": {"url": _bible_url()}}],
+            [{"text": "Старт"}],
+        ],
         "resize_keyboard": True,
         "is_persistent": True,
     }
@@ -2184,12 +2226,33 @@ async def bible_webhook(request: Request):
     if not chat_id:
         return {"ok": True}
 
-    # Любое сообщение в личке с ботом — будь то /start, нажатие постоянной
-    # кнопки «Старт» или вообще что угодно ещё — приводит к одному и тому же
-    # результату. Пользователю не нужно разбираться в командах Telegram:
-    # что бы он ни отправил, он снова увидит приветствие с рабочими кнопками.
-    await bible_send(chat_id, BIBLE_WELCOME_TEXT, bible_welcome_buttons())
-    await bible_send(chat_id, "Кнопка «Старт» всегда под рукой внизу 👇", bible_start_keyboard())
+    # /stats — только для владельца/админа бота (BIBLE_ADMIN_USER_IDS), обычным
+    # пользователям недоступно и никак не отражается в их сценарии приветствия.
+    sender_id = (message.get("from") or {}).get("id")
+    text = (message.get("text") or "").strip()
+    if text == "/stats":
+        if sender_id in BIBLE_ADMIN_USER_IDS:
+            if not SUPABASE_URL:
+                await bible_send(chat_id, "SUPABASE_URL не настроен — статистика недоступна.")
+            else:
+                s = await bible_collect_stats()
+                await bible_send(
+                    chat_id,
+                    "📊 <b>Статистика «План чтения Библии»</b>\n\n"
+                    f"👥 Всего зарегистрировано: <b>{s['total']}</b>\n"
+                    f"🔥 Читали сегодня: <b>{s['active_today']}</b>\n"
+                    f"📅 Читали за последние 7 дней: <b>{s['active_7d']}</b>\n"
+                    f"🔔 С включёнными напоминаниями: <b>{s['notify_enabled']}</b>",
+                )
+        return {"ok": True}
+
+    # Любое остальное сообщение в личке с ботом — будь то /start, нажатие
+    # постоянной кнопки «Старт» или вообще что угодно ещё — приводит к одному
+    # и тому же результату. Пользователю не нужно разбираться в командах
+    # Telegram: что бы он ни отправил, он снова увидит приветствие с кнопками.
+    # Одно сообщение целиком: текст со ссылкой на канал + постоянная клавиатура
+    # с кнопками «Открыть план чтения» и «Старт» (см. bible_start_keyboard).
+    await bible_send(chat_id, BIBLE_WELCOME_TEXT, bible_start_keyboard())
     return {"ok": True}
 
 @app.get("/bible/status")
