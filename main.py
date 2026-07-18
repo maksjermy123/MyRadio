@@ -1996,7 +1996,12 @@ async def sb_patch(user_id: int, payload: dict):
             json=payload,
         )
 
-async def sb_get_hour(hour: int) -> list:
+async def sb_get_due(hour: int, minute: int) -> list:
+    """Точное совпадение часа И минуты — раньше проверялся только час
+    (notify_hour_msk), поэтому время вроде 8:37 фактически округлялось
+    до ближайшего часа. notify_minute_msk по умолчанию 0, поэтому все
+    пользователи, ещё не задававшие точное время, продолжают получать
+    напоминание ровно в начале часа — поведение для них не меняется."""
     from datetime import date
     today = date.today().isoformat()
     async with httpx.AsyncClient() as client:
@@ -2005,6 +2010,7 @@ async def sb_get_hour(hour: int) -> list:
             headers=SB_HEADERS,
             params={
                 "notify_hour_msk": f"eq.{hour}",
+                "notify_minute_msk": f"eq.{minute}",
                 "notify_on": "eq.true",
                 "last_read_date": f"neq.{today}",
                 "select": "user_id,plan_id,streak",
@@ -2127,6 +2133,7 @@ class BibleRegisterBody(BaseModel):
     user_id: int
     plan_id: str
     notify_hour_msk: int = 8
+    notify_minute_msk: int = 0
     notify_on: bool = True
 
 class BibleReadBody(BaseModel):
@@ -2136,6 +2143,7 @@ class BibleReadBody(BaseModel):
 class BibleSettingsBody(BaseModel):
     user_id: int
     notify_hour_msk: int
+    notify_minute_msk: int = 0
     notify_on: bool
 
 class StateBody(BaseModel):
@@ -2152,6 +2160,7 @@ async def bible_register(body: BibleRegisterBody):
         "plan_id": body.plan_id,
         "start_date": date.today().isoformat(),
         "notify_hour_msk": body.notify_hour_msk,
+        "notify_minute_msk": body.notify_minute_msk,
         "notify_on": body.notify_on,
         "streak": 0, "max_streak": 0,
         "last_read_date": None, "days_done": [],
@@ -2193,6 +2202,7 @@ async def bible_read(body: BibleReadBody):
 async def bible_settings(body: BibleSettingsBody):
     await sb_patch(body.user_id, {
         "notify_hour_msk": body.notify_hour_msk,
+        "notify_minute_msk": body.notify_minute_msk,
         "notify_on": body.notify_on,
     })
     return {"ok": True}
@@ -2260,14 +2270,20 @@ async def bible_health():
     return {"ok": True, "bible_bot": BIBLE_BOT_USERNAME,
             "supabase": bool(SUPABASE_URL), "pages": BIBLE_PAGES_URL}
 
-# ── Scheduler: проверяем каждый час, кому пора напомнить ──────
+# ── Scheduler: проверяем каждую минуту, кому пора напомнить ────
+# Раньше cron срабатывал только minute=0 (раз в час), а notify_hour_msk
+# хранил лишь час — точное время вроде 8:37 негде было даже сохранить,
+# фактически всегда округлялось до ближайшего часа. Теперь сверяем и
+# час, и минуту (notify_minute_msk) — напоминание уходит ровно в
+# заданную пользователем минуту. Нагрузка на Supabase минимальна:
+# запрос лёгкий (условие по двум точным полям), таблица некрупная.
 
-@bible_scheduler.scheduled_job("cron", minute=0)
+@bible_scheduler.scheduled_job("cron", minute="*")
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return
-    current_hour = datetime.now(MSK).hour
-    users = await sb_get_hour(current_hour)
+    now_msk = datetime.now(MSK)
+    users = await sb_get_due(now_msk.hour, now_msk.minute)
     for u in users:
         streak = u.get("streak", 0)
         streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
