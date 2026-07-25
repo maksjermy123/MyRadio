@@ -2001,7 +2001,11 @@ async def sb_get_due(hour: int, minute: int) -> list:
     (notify_hour_msk), поэтому время вроде 8:37 фактически округлялось
     до ближайшего часа. notify_minute_msk по умолчанию 0, поэтому все
     пользователи, ещё не задававшие точное время, продолжают получать
-    напоминание ровно в начале часа — поведение для них не меняется."""
+    напоминание ровно в начале часа — поведение для них не меняется.
+
+    start_date и days_done дополнительно нужны, чтобы посчитать отставание
+    пользователя от календарного графика (см. bible_send_reminders) —
+    сама выборка по-прежнему фильтруется только по времени/notify_on."""
     from datetime import date
     today = date.today().isoformat()
     async with httpx.AsyncClient() as client:
@@ -2013,7 +2017,7 @@ async def sb_get_due(hour: int, minute: int) -> list:
                 "notify_minute_msk": f"eq.{minute}",
                 "notify_on": "eq.true",
                 "last_read_date": f"neq.{today}",
-                "select": "user_id,plan_id,streak",
+                "select": "user_id,plan_id,streak,start_date,days_done",
             },
         )
         return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
@@ -2295,6 +2299,40 @@ async def bible_health():
 # заданную пользователем минуту. Нагрузка на Supabase минимальна:
 # запрос лёгкий (условие по двум точным полям), таблица некрупная.
 
+def _ru_day_word(n: int) -> str:
+    """Склонение 'день/дня/дней' для целого n (n предполагается >= 0)."""
+    if 11 <= n % 100 <= 19:
+        return "дней"
+    r = n % 10
+    if r == 1:
+        return "день"
+    if 2 <= r <= 4:
+        return "дня"
+    return "дней"
+
+
+def _days_behind(u: dict) -> int:
+    """Сколько календарных дней плана пользователь ещё не прочитал.
+    Раньше мини-апп при пропусках сам переставал показывать пропущенные
+    дни (перескакивал сразу на сегодняшний календарный день), из-за чего
+    те дни было физически невозможно отметить прочитанными. Теперь
+    мини-апп всегда ведёт на первый непрочитанный день и не теряет пропуски,
+    а здесь мы используем ту же идею — считаем отставание как разницу между
+    номером сегодняшнего календарного дня плана и количеством уже
+    прочитанных дней (days_done), а не полагаемся на сломанный streak."""
+    start_raw = u.get("start_date")
+    if not start_raw:
+        return 0
+    from datetime import date
+    try:
+        start = date.fromisoformat(start_raw)
+    except ValueError:
+        return 0
+    calendar_day = (date.today() - start).days + 1
+    done_count = len(u.get("days_done") or [])
+    return max(0, calendar_day - done_count)
+
+
 @bible_scheduler.scheduled_job("cron", minute="*")
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
@@ -2303,9 +2341,19 @@ async def bible_send_reminders():
     users = await sb_get_due(now_msk.hour, now_msk.minute)
     for u in users:
         streak = u.get("streak", 0)
-        streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
+        lag = _days_behind(u)
+        if lag > 0:
+            word = _ru_day_word(lag)
+            body = (
+                f"⚠️ Ты отстаёшь на {lag} {word} от плана чтения.\n"
+                f"Не переживай — пропущенные дни никуда не делись. "
+                f"Открой план и наверстай сразу несколько дней подряд!"
+            )
+        else:
+            streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
+            body = f"📅 Время читать Библию\n{streak_text}"
         await bible_send(
             u["user_id"],
-            f"📅 Время читать Библию\n{streak_text}",
+            body,
             bible_reminder_button(),
         )
