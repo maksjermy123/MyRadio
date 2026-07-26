@@ -19,6 +19,7 @@ from urllib.parse import unquote, parse_qsl
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from typing import Optional
 from pydantic import BaseModel
 import httpx
 from zoneinfo import ZoneInfo
@@ -2152,6 +2153,7 @@ class BibleRegisterBody(BaseModel):
 class BibleReadBody(BaseModel):
     user_id: int
     day_number: int
+    local_date: Optional[str] = None  # YYYY-MM-DD по локальному времени пользователя
 
 class BibleSettingsBody(BaseModel):
     user_id: int
@@ -2193,8 +2195,14 @@ async def bible_read(body: BibleReadBody):
     row = await sb_get(body.user_id)
     if not row:
         return {"ok": False, "error": "not registered"}
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    # Доверяем локальной дате клиента, а не часовому поясу сервера (Render/UTC) —
+    # иначе чтение поздно вечером/рано утром по местному времени пользователя
+    # могло попасть не на тот "день" и сломать стрик без реальной причины.
+    try:
+        today = date.fromisoformat(body.local_date).isoformat() if body.local_date else date.today().isoformat()
+    except ValueError:
+        today = date.today().isoformat()
+    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
     last = row.get("last_read_date")
     if last == today and body.day_number in (row.get("days_done") or []):
         return {"ok": True, "streak": row["streak"], "already": True}
