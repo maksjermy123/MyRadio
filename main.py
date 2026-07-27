@@ -2161,6 +2161,10 @@ class BibleSettingsBody(BaseModel):
     notify_minute_msk: int = 0
     notify_on: bool
 
+class BibleMergeDaysBody(BaseModel):
+    user_id: int
+    days_done: list
+
 class StateBody(BaseModel):
     user_id: int
     data: dict
@@ -2218,6 +2222,26 @@ async def bible_read(body: BibleReadBody):
         "last_read_date": today, "days_done": days_done,
     })
     return {"ok": True, "streak": streak, "max_streak": max_streak}
+
+@app.post("/plan/merge_days")
+async def bible_merge_days(body: BibleMergeDaysBody):
+    """Объединяет присланный клиентом список прочитанных дней с тем, что
+    уже есть на сервере — и только это. Нужен, потому что days_done
+    хранится в ДВУХ независимых местах (canonical plan_progress, которым
+    пользуются виджет "План" и уведомления, и слепок app_state, которым
+    пользуется сам мини-апп плана) — и если запрос /plan/read когда-то не
+    долетел до сервера (обрыв сети сразу после нажатия "Прочитал"), эти два
+    списка расходятся, и лаг/отставание в разных местах интерфейса
+    показывает разные числа. Стрик и last_read_date здесь НЕ трогаем —
+    это отдельная, более тонкая логика (см. /plan/read), которую не стоит
+    задним числом пересчитывать при простом объединении списков дней."""
+    row = await sb_get(body.user_id)
+    if not row:
+        return {"ok": False, "error": "not registered"}
+    merged = sorted(set((row.get("days_done") or [])) | set(body.days_done or []))
+    if merged != sorted(row.get("days_done") or []):
+        await sb_patch(body.user_id, {"days_done": merged})
+    return {"ok": True, "days_done": merged}
 
 @app.post("/plan/settings")
 async def bible_settings(body: BibleSettingsBody):
