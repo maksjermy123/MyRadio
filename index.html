@@ -491,13 +491,61 @@ function renderPlanInvite(body){
     +'<div class="plan-note">Откроется бот «План чтения Библии» в Telegram</div>'
     +'</div>';
 }
+/* Локальная (не UTC) дата в формате YYYY-MM-DD — см. те же грабли и фикс,
+   что и в мини-аппе плана (index2.html): .toISOString() отдаёт дату по UTC
+   и рядом с полуночью может незаметно сдвинуть "сегодня" на соседний день. */
+function planLocalDateStr(d){
+  var y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+day;
+}
+function planToday(){return planLocalDateStr(new Date());}
+function planYesterday(){var d=new Date();d.setDate(d.getDate()-1);return planLocalDateStr(d);}
+/* Тот же алгоритм, что и в мини-аппе плана (nextUnreadDay/_next_unread_day
+   на сервере): первый день от 1 до calendarDay, которого нет среди
+   прочитанных — а не "прошло минус прочитано", чтобы число совпадало с
+   тем, что видно в самом плане. */
+function planLag(startDate,daysDone){
+  if(!startDate) return 0;
+  var start=new Date(startDate+'T00:00:00');
+  var now=new Date();now.setHours(0,0,0,0);
+  var calendarDay=Math.floor((now-start)/86400000)+1;
+  var done=daysDone||[];
+  var landing=calendarDay;
+  for(var d=1;d<=calendarDay;d++){
+    if(done.indexOf(d)<0){landing=d;break;}
+  }
+  return Math.max(0,calendarDay-landing);
+}
+function planDayWord(n){
+  if(n%100>=11&&n%100<=19)return 'дней';
+  var r=n%10;
+  if(r===1)return 'день';
+  if(r>=2&&r<=4)return 'дня';
+  return 'дней';
+}
 function renderPlanProgress(body,d){
-  var streak=d.streak||0;
+  var rawStreak=d.streak||0;
+  var maxStreak=d.max_streak||0;
   var daysDone=(d.days_done&&d.days_done.length)||0;
+  /* "Честный" стрик: как и в самом мини-аппе плана, серия считается живой,
+     только если последнее чтение было сегодня или вчера — иначе сырое
+     значение из базы может быть давно устаревшим (см. effStreak в index2.html). */
+  var streak=(d.last_read_date===planToday()||d.last_read_date===planYesterday())?rawStreak:0;
+  var lag=planLag(d.start_date,d.days_done);
+  var emoji,headline;
+  if(lag>0){
+    emoji='🎯';headline='Отстаёшь на '+lag+' '+planDayWord(lag)+' — открой план и наверстай';
+  } else if(streak>0){
+    emoji='🔥';headline='Серия не прервана — так держать!';
+  } else if(maxStreak>0){
+    emoji='💤';headline='Серия прервалась. Рекорд — '+maxStreak+' '+planDayWord(maxStreak)+'. Начни новую!';
+  } else {
+    emoji='🌱';headline='Ты начал план — читай дальше!';
+  }
   body.innerHTML=''
     +'<div class="plan-card">'
-    +'<div class="plan-emoji">🔥</div>'
-    +'<h3>Ты уже читаешь Библию по плану</h3>'
+    +'<div class="plan-emoji">'+emoji+'</div>'
+    +'<h3>'+headline+'</h3>'
     +'<div class="plan-stats">'
       +'<div class="plan-stat"><b>'+streak+'</b><span>Дней подряд</span></div>'
       +'<div class="plan-stat"><b>'+daysDone+'</b><span>Дней прочитано</span></div>'
