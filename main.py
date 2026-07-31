@@ -1970,12 +1970,39 @@ async def bible_scheduler_startup():
 
 # ── Supabase: plan_progress ────────────────────────────────────
 
-async def sb_get(user_id: int):
+# ── Supabase: plan_progress ────────────────────────────────────
+# ВАЖНО: с этой ревизии таблица plan_progress ведёт прогресс не "одна
+# строка на пользователя", а "одна строка на (пользователь, план)" — это
+# и есть требуемая поддержка нескольких одновременных планов с разным
+# темпом чтения. Перед деплоем нужно один раз выполнить в Supabase SQL
+# Editor (Table Editor → plan_progress → SQL, либо через "SQL Editor"):
+#
+#   alter table plan_progress drop constraint if exists plan_progress_user_id_key;
+#   alter table plan_progress add constraint plan_progress_user_plan_key unique (user_id, plan_id);
+#
+# (имя старого constraint'а на user_id может отличаться — если команда
+# выше не найдёт его по имени, откройте Table Editor → plan_progress →
+# вкладку "Constraints", посмотрите точное имя uniq-констрейнта на
+# user_id и подставьте его в DROP CONSTRAINT).
+
+async def sb_get_all(user_id: int) -> list:
+    """Все строки прогресса пользователя — по одной на каждый его план."""
     async with httpx.AsyncClient() as client:
         r = await client.get(
             f"{SUPABASE_URL}/rest/v1/plan_progress",
             headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}", "limit": "1"},
+            params={"user_id": f"eq.{user_id}"},
+        )
+        data = r.json()
+        return data if isinstance(data, list) else []
+
+async def sb_get_one(user_id: int, plan_id: str):
+    """Прогресс по конкретному плану (или None, если пользователь его не регистрировал)."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            headers=SB_HEADERS,
+            params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}", "limit": "1"},
         )
         data = r.json()
         return data[0] if isinstance(data, list) and data else None
@@ -1988,12 +2015,12 @@ async def sb_upsert(payload: dict):
             json=payload,
         )
 
-async def sb_patch(user_id: int, payload: dict):
+async def sb_patch(user_id: int, plan_id: str, payload: dict):
     async with httpx.AsyncClient() as client:
         await client.patch(
             f"{SUPABASE_URL}/rest/v1/plan_progress",
             headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}"},
+            params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
             json=payload,
         )
 
@@ -2004,9 +2031,9 @@ async def sb_get_due(hour: int, minute: int) -> list:
     пользователи, ещё не задававшие точное время, продолжают получать
     напоминание ровно в начале часа — поведение для них не меняется.
 
-    start_date и days_done дополнительно нужны, чтобы посчитать отставание
-    пользователя от календарного графика (см. bible_send_reminders) —
-    сама выборка по-прежнему фильтруется только по времени/notify_on."""
+    Теперь возвращает строки по (user_id, plan_id) — если у пользователя
+    несколько планов с одинаковым временем напоминания, придёт по одному
+    сообщению на каждый план (см. bible_send_reminders)."""
     from datetime import date
     today = date.today().isoformat()
     async with httpx.AsyncClient() as client:
@@ -2026,7 +2053,10 @@ async def sb_get_due(hour: int, minute: int) -> list:
 async def _sb_count(client: httpx.AsyncClient, extra_params: dict) -> int:
     """Считает строки в plan_progress через PostgREST Prefer: count=exact —
     сам запрос данные не гоняет (select=user_id минимален), интересен только
-    заголовок Content-Range вида '0-24/137', откуда и берём итоговое число."""
+    заголовок Content-Range вида '0-24/137', откуда и берём итоговое число.
+    ПРИМЕЧАНИЕ: после перехода на одну строку на (пользователь, план) эти
+    числа в /stats считают РЕГИСТРАЦИИ ПЛАНОВ, а не уникальных пользователей
+    — пользователь с двумя активными планами даст здесь +2, а не +1."""
     r = await client.get(
         f"{SUPABASE_URL}/rest/v1/plan_progress",
         headers={**SB_HEADERS, "Prefer": "count=exact"},
@@ -2152,24 +2182,39 @@ class BibleRegisterBody(BaseModel):
 
 class BibleReadBody(BaseModel):
     user_id: int
+    plan_id: str
     day_number: int
     local_date: Optional[str] = None  # YYYY-MM-DD по локальному времени пользователя
 
 class BibleSettingsBody(BaseModel):
     user_id: int
+    plan_id: str
     notify_hour_msk: int
     notify_minute_msk: int = 0
     notify_on: bool
 
 class BibleMergeDaysBody(BaseModel):
     user_id: int
+    plan_id: str
     days_done: list
+
+class BibleSetDaysBody(BaseModel):
+    user_id: int
+    plan_id: str
+    days_done: list
+
+class BibleUnregisterBody(BaseModel):
+    user_id: int
+    plan_id: str
 
 class StateBody(BaseModel):
     user_id: int
     data: dict
 
 # ── Endpoints: планы чтения ────────────────────────────────────
+# Все ниже — теперь на уровне (user_id, plan_id): пользователь может вести
+# несколько планов одновременно, каждый со своим прогрессом, стриком и
+# собственным временем напоминания.
 
 @app.post("/plan/register")
 async def bible_register(body: BibleRegisterBody):
@@ -2187,16 +2232,24 @@ async def bible_register(body: BibleRegisterBody):
     return {"ok": True}
 
 @app.get("/plan/status")
-async def bible_status(user_id: int):
-    row = await sb_get(user_id)
-    if not row:
-        return {"registered": False}
-    return {"registered": True, **row}
+async def bible_status(user_id: int, plan_id: Optional[str] = None):
+    """С plan_id — прогресс конкретного плана (плоский объект, как раньше,
+    для обратной совместимости с местами, которые уже знают, какой план их
+    интересует). Без plan_id — сводка ПО ВСЕМ планам пользователя, нужна
+    виджету "План" в мини-аппе Оглавления, который не привязан к одному
+    конкретному плану."""
+    if plan_id:
+        row = await sb_get_one(user_id, plan_id)
+        if not row:
+            return {"registered": False}
+        return {"registered": True, **row}
+    rows = await sb_get_all(user_id)
+    return {"registered": bool(rows), "plans": rows}
 
 @app.post("/plan/read")
 async def bible_read(body: BibleReadBody):
     from datetime import date, timedelta
-    row = await sb_get(body.user_id)
+    row = await sb_get_one(body.user_id, body.plan_id)
     if not row:
         return {"ok": False, "error": "not registered"}
     # Доверяем локальной дате клиента, а не часовому поясу сервера (Render/UTC) —
@@ -2217,11 +2270,28 @@ async def bible_read(body: BibleReadBody):
         streak = 1
     max_streak = max(row.get("max_streak", 0), streak)
     days_done = list(set((row.get("days_done") or []) + [body.day_number]))
-    await sb_patch(body.user_id, {
+    await sb_patch(body.user_id, body.plan_id, {
         "streak": streak, "max_streak": max_streak,
         "last_read_date": today, "days_done": days_done,
     })
     return {"ok": True, "streak": streak, "max_streak": max_streak}
+
+@app.post("/plan/unregister")
+async def bible_unregister(body: BibleUnregisterBody):
+    """Полностью удаляет строку прогресса КОНКРЕТНОГО плана из plan_progress
+    (остальные планы пользователя, если есть, не затрагиваются). Нужен,
+    потому что удаление плана в самом мини-аппе (delPlan()) раньше чистило
+    только локальное состояние (app_state) — канонические данные на сервере
+    (streak, days_done и т.д.) оставались нетронутыми, из-за чего виджет
+    "План" и push-уведомления продолжали показывать прогресс уже удалённого
+    плана."""
+    async with httpx.AsyncClient() as client:
+        await client.delete(
+            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            headers=SB_HEADERS,
+            params={"user_id": f"eq.{body.user_id}", "plan_id": f"eq.{body.plan_id}"},
+        )
+    return {"ok": True}
 
 @app.post("/plan/merge_days")
 async def bible_merge_days(body: BibleMergeDaysBody):
@@ -2235,17 +2305,31 @@ async def bible_merge_days(body: BibleMergeDaysBody):
     показывает разные числа. Стрик и last_read_date здесь НЕ трогаем —
     это отдельная, более тонкая логика (см. /plan/read), которую не стоит
     задним числом пересчитывать при простом объединении списков дней."""
-    row = await sb_get(body.user_id)
+    row = await sb_get_one(body.user_id, body.plan_id)
     if not row:
         return {"ok": False, "error": "not registered"}
     merged = sorted(set((row.get("days_done") or [])) | set(body.days_done or []))
     if merged != sorted(row.get("days_done") or []):
-        await sb_patch(body.user_id, {"days_done": merged})
+        await sb_patch(body.user_id, body.plan_id, {"days_done": merged})
     return {"ok": True, "days_done": merged}
+
+@app.post("/plan/set_days")
+async def bible_set_days(body: BibleSetDaysBody):
+    """В отличие от /plan/merge_days — не объединяет, а ПЕРЕЗАПИСЫВАЕТ
+    список прочитанных дней ровно тем, что прислали. Нужен для редактирования
+    своего плана ("Составить свой план"): если пользователь уменьшает
+    длительность плана, дни за пределами нового графика должны реально
+    пропасть из прогресса, а не остаться висеть через union."""
+    row = await sb_get_one(body.user_id, body.plan_id)
+    if not row:
+        return {"ok": False, "error": "not registered"}
+    cleaned = sorted(set(body.days_done or []))
+    await sb_patch(body.user_id, body.plan_id, {"days_done": cleaned})
+    return {"ok": True, "days_done": cleaned}
 
 @app.post("/plan/settings")
 async def bible_settings(body: BibleSettingsBody):
-    await sb_patch(body.user_id, {
+    await sb_patch(body.user_id, body.plan_id, {
         "notify_hour_msk": body.notify_hour_msk,
         "notify_minute_msk": body.notify_minute_msk,
         "notify_on": body.notify_on,
@@ -2343,6 +2427,26 @@ def _ru_day_word(n: int) -> str:
     return "дней"
 
 
+# Названия системных планов (для сообщений напоминаний) — должны совпадать
+# с id/title из массива PLANS в index.html (репозиторий bible-reading-bot).
+# Сама разметка расписания (schedule) там не нужна — только человекочитаемое
+# имя, чтобы при нескольких одновременных планах пользователь понимал, о
+# каком из них уведомление.
+PLAN_TITLES = {
+    "mark_16": "Евангелие от Марка за 16 дней",
+    "psalms_30": "Псалтирь за 30 дней",
+    "nt_90": "Новый Завет за 90 дней",
+    "bible_365": "Библия за год",
+}
+
+def _plan_title(plan_id: str) -> str:
+    if plan_id in PLAN_TITLES:
+        return PLAN_TITLES[plan_id]
+    if plan_id and plan_id.startswith("c"):
+        return "Свой план"
+    return "план чтения"
+
+
 def _next_unread_day(calendar_day: int, days_done) -> int:
     """Тот же алгоритм, что и nextUnreadDay() в мини-аппе: первый день от 1
     до calendar_day, которого нет среди прочитанных. Раньше сервер считал
@@ -2388,16 +2492,17 @@ async def bible_send_reminders():
     for u in users:
         streak = u.get("streak", 0)
         lag = _days_behind(u)
+        title = _plan_title(u.get("plan_id", ""))
         if lag > 0:
             word = _ru_day_word(lag)
             body = (
-                f"⚠️ Ты отстаёшь на {lag} {word} от плана чтения.\n"
+                f"⚠️ «{title}»: отстаёшь на {lag} {word} от плана чтения.\n"
                 f"Не переживай — пропущенные дни никуда не делись. "
                 f"Открой план и наверстай сразу несколько дней подряд!"
             )
         else:
             streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
-            body = f"📅 Время читать Библию\n{streak_text}"
+            body = f"📅 «{title}»: время читать Библию\n{streak_text}"
         await bible_send(
             u["user_id"],
             body,
