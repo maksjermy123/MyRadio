@@ -168,6 +168,12 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .plan-stats{display:flex;justify-content:center;gap:22px;margin-bottom:18px}
 .plan-stat b{display:block;font-family:'Cormorant Garamond',serif;font-size:24px;font-weight:600;color:var(--green2)}
 .plan-stat span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.plan-row{display:flex;align-items:center;gap:10px;padding:10px 4px;text-align:left;border-bottom:1px solid var(--border)}
+.plan-row:last-of-type{border-bottom:none}
+.plan-row-emoji{font-size:22px;flex-shrink:0}
+.plan-row-info{display:flex;flex-direction:column;gap:2px;min-width:0}
+.plan-row-info b{font-size:13px;color:var(--text2)}
+.plan-row-info span{font-size:11.5px;color:var(--muted)}
 .plan-btn{display:block;width:100%;padding:14px;background:linear-gradient(135deg,var(--green),var(--orange));border:none;border-radius:50px;color:#fff;font-family:'Nunito',sans-serif;font-weight:800;font-size:14px;letter-spacing:.02em;cursor:pointer;box-shadow:0 4px 16px rgba(46,125,50,.35);transition:transform .15s}
 .plan-btn:active{transform:scale(.96)}
 .plan-note{font-size:10.5px;color:var(--muted);margin-top:12px;line-height:1.5}
@@ -476,7 +482,7 @@ function loadPlan(){
   fetch(BACKEND+'/plan/status?user_id='+userId)
     .then(function(r){return r.json();})
     .then(function(d){
-      if(d&&d.registered) renderPlanProgress(body,d);
+      if(d&&d.registered) renderPlanProgress(body,d.plans||[]);
       else renderPlanInvite(body);
     })
     .catch(function(){ renderPlanInvite(body); });
@@ -523,34 +529,76 @@ function planDayWord(n){
   if(r>=2&&r<=4)return 'дня';
   return 'дней';
 }
-function renderPlanProgress(body,d){
+/* Названия системных планов для отображения — должны совпадать с id/title
+   из массива PLANS в index.html репозитория bible-reading-bot, и с
+   PLAN_TITLES в main.py (там та же карта нужна для текста уведомлений).
+   Без этого при нескольких одновременных планах непонятно, какой из них
+   к какой строке относится. */
+var PLAN_TITLES={
+  mark_16:'Евангелие от Марка',
+  psalms_30:'Псалтирь',
+  nt_90:'Новый Завет',
+  bible_365:'Библия за год'
+};
+function planTitle(planId){
+  if(PLAN_TITLES[planId])return PLAN_TITLES[planId];
+  if(planId&&planId.charAt(0)==='c')return 'Свой план';
+  return 'План чтения';
+}
+/* Общая логика состояния для ОДНОГО плана (вариант B — единое сообщение
+   вместо одновременных "стрик" + "отставание", которые могли противоречить
+   друг другу). Переиспользуется и для одиночной карточки, и для списка
+   при нескольких одновременных планах. */
+function planSummary(d){
   var rawStreak=d.streak||0;
   var maxStreak=d.max_streak||0;
   var daysDone=(d.days_done&&d.days_done.length)||0;
-  /* "Честный" стрик: как и в самом мини-аппе плана, серия считается живой,
-     только если последнее чтение было сегодня или вчера — иначе сырое
-     значение из базы может быть давно устаревшим (см. effStreak в index2.html). */
   var streak=(d.last_read_date===planToday()||d.last_read_date===planYesterday())?rawStreak:0;
   var lag=planLag(d.start_date,d.days_done);
   var emoji,headline;
   if(lag>0){
-    emoji='🎯';headline='Отстаёшь на '+lag+' '+planDayWord(lag)+' — открой план и наверстай';
+    emoji='🎯';headline='Отстаёшь на '+lag+' '+planDayWord(lag)+' — наверстай';
   } else if(streak>0){
     emoji='🔥';headline='Серия не прервана — так держать!';
   } else if(maxStreak>0){
-    emoji='💤';headline='Серия прервалась. Рекорд — '+maxStreak+' '+planDayWord(maxStreak)+'. Начни новую!';
+    emoji='💤';headline='Рекорд — '+maxStreak+' '+planDayWord(maxStreak)+'. Начни новую!';
   } else {
     emoji='🌱';headline='Ты начал план — читай дальше!';
   }
+  return {emoji:emoji,headline:headline,streak:streak,daysDone:daysDone,title:planTitle(d.plan_id)};
+}
+function renderPlanProgress(body,plans){
+  if(!plans||!plans.length){renderPlanInvite(body);return;}
+  if(plans.length===1){
+    var s=planSummary(plans[0]);
+    body.innerHTML=''
+      +'<div class="plan-card">'
+      +'<div class="plan-emoji">'+s.emoji+'</div>'
+      +'<h3>'+s.headline+'</h3>'
+      +'<div class="plan-stats">'
+        +'<div class="plan-stat"><b>'+s.streak+'</b><span>Дней подряд</span></div>'
+        +'<div class="plan-stat"><b>'+s.daysDone+'</b><span>Дней прочитано</span></div>'
+      +'</div>'
+      +'<button class="plan-btn" onclick="openBiblePlan()">Продолжить чтение →</button>'
+      +'<div class="plan-note">Откроется бот «План чтения Библии» в Telegram</div>'
+      +'</div>';
+    return;
+  }
+  // Несколько одновременных планов — компактный список, у каждого своё
+  // независимое состояние (разный темп чтения у каждого плана учитывается
+  // отдельно, ни один не перезаписывает данные другого).
+  var rows=plans.map(function(d){
+    var s=planSummary(d);
+    return '<div class="plan-row">'
+      +'<span class="plan-row-emoji">'+s.emoji+'</span>'
+      +'<div class="plan-row-info"><b>'+s.title+'</b><span>'+s.headline+' · '+s.daysDone+' дн. прочитано</span></div>'
+      +'</div>';
+  }).join('');
   body.innerHTML=''
     +'<div class="plan-card">'
-    +'<div class="plan-emoji">'+emoji+'</div>'
-    +'<h3>'+headline+'</h3>'
-    +'<div class="plan-stats">'
-      +'<div class="plan-stat"><b>'+streak+'</b><span>Дней подряд</span></div>'
-      +'<div class="plan-stat"><b>'+daysDone+'</b><span>Дней прочитано</span></div>'
-    +'</div>'
-    +'<button class="plan-btn" onclick="openBiblePlan()">Продолжить чтение →</button>'
+    +'<h3>📚 Твои планы чтения</h3>'
+    +rows
+    +'<button class="plan-btn" style="margin-top:14px" onclick="openBiblePlan()">Открыть →</button>'
     +'<div class="plan-note">Откроется бот «План чтения Библии» в Telegram</div>'
     +'</div>';
 }
