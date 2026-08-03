@@ -2010,7 +2010,7 @@ async def sb_get_one(user_id: int, plan_id: str):
 async def sb_upsert(payload: dict):
     async with httpx.AsyncClient() as client:
         await client.post(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            f"{SUPABASE_URL}/rest/v1/plan_progress?on_conflict=user_id,plan_id",
             headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
             json=payload,
         )
