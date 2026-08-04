@@ -15,7 +15,7 @@ import logging
 import random
 from collections import defaultdict
 from datetime import datetime, timezone
-from urllib.parse import unquote, parse_qsl
+from urllib.parse import unquote, parse_qsl, quote
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -2133,11 +2133,30 @@ def _bible_url() -> str:
     return f"{BIBLE_PAGES_URL}?v={int(time.time())}"
 
 CHANNEL_BTN_TEXT = f"📻 {CHANNEL_NAME}"
+SHARE_BTN_TEXT = "📤 Поделиться с другом"
 
 BIBLE_WELCOME_TEXT = (
     "Привет! Читай Библию по плану — отмечай прочитанное и следи за числом дней подряд 🔥"
     "\n\nВыбери удобный план и начни сегодня:"
 )
+
+def bible_share_button() -> dict:
+    """Кнопка Bot API у обычной (reply) клавиатуры физически не умеет сама
+    открыть системное окно выбора получателя — так устроен сам Telegram:
+    reply-кнопки могут быть только текстом, request_contact/location/poll
+    или web_app. Настоящее системное окно "кому переслать" открывается
+    только по инлайн-кнопке со ссылкой вида t.me/share/url. Поэтому нажатие
+    "Поделиться с другом" на клавиатуре (см. bible_start_keyboard) отправляет
+    этот текст как обычное сообщение, а бот в ответ (см. bible_webhook)
+    присылает отдельное сообщение с ИНЛАЙН-кнопкой на эту ссылку — именно
+    её нажатие и раскрывает системный список контактов/чатов."""
+    bot_username = BIBLE_BOT_USERNAME.lstrip("@")
+    app_link = f"https://t.me/{bot_username}/plan"
+    share_text = "📖 Нашёл удобный бот для чтения Библии по плану — с трекером дней подряд и напоминаниями. Попробуй!"
+    share_url = f"https://t.me/share/url?url={quote(app_link, safe='')}&text={quote(share_text, safe='')}"
+    return {"inline_keyboard": [[
+        {"text": "👥 Выбрать, кому отправить", "url": share_url}
+    ]]}
 
 def bible_welcome_buttons() -> dict:
     """Инлайн-кнопки, прикреплённые к приветственному сообщению — та же
@@ -2151,13 +2170,14 @@ def bible_welcome_buttons() -> dict:
     ]]}
 
 def bible_start_keyboard() -> dict:
-    """Единственная постоянная клавиатура внизу чата — только «Старт».
+    """Постоянная клавиатура внизу чата — «Старт» и «Поделиться с другом».
     Рабочие кнопки («Открыть план чтения», канал) сюда намеренно не входят —
     они инлайн-кнопки на приветственном сообщении (см. bible_welcome_buttons),
     чтобы низ экрана не был перманентно занят кнопкой мини-аппа. Нажатие
-    «Старт» равносильно /start: бот заново присылает приветствие с кнопками."""
+    «Старт» равносильно /start: бот заново присылает приветствие с кнопками.
+    Нажатие «Поделиться с другом» — см. bible_share_button()."""
     return {
-        "keyboard": [[{"text": "Старт"}]],
+        "keyboard": [[{"text": "Старт"}, {"text": SHARE_BTN_TEXT}]],
         "resize_keyboard": True,
         "is_persistent": True,
     }
@@ -2383,6 +2403,14 @@ async def bible_webhook(request: Request):
                     f"📅 Читали за последние 7 дней: <b>{s['active_7d']}</b>\n"
                     f"🔔 С включёнными напоминаниями: <b>{s['notify_enabled']}</b>",
                 )
+        return {"ok": True}
+
+    if text == SHARE_BTN_TEXT:
+        await bible_send(
+            chat_id,
+            "Отправь другу ссылку на бота одним нажатием:",
+            bible_share_button(),
+        )
         return {"ok": True}
 
     # Любое остальное сообщение в личке с ботом — будь то /start, нажатие
