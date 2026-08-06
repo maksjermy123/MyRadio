@@ -1846,6 +1846,37 @@ async def check_webhook():
             f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo")).json()
 
 
+@app.get("/set_webhook_bible")
+async def set_webhook_bible(request: Request):
+    """Регистрирует вебхук бота «План чтения Библии» с явным allowed_updates,
+    включающим callback_query — без этого поля Telegram мог быть настроен
+    (например, вручную, ещё до появления инлайн-кнопок админ-панели) без
+    доставки нажатий на инлайн-кнопки вообще. Достаточно один раз открыть
+    этот адрес в браузере после деплоя."""
+    if not BIBLE_BOT_TOKEN:
+        return {"ok": False, "error": "BIBLE_BOT_TOKEN not set"}
+    webhook_url = str(request.base_url).rstrip("/") + "/webhook/bible"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}/setWebhook",
+            json={
+                "url": webhook_url,
+                "allowed_updates": ["message", "callback_query"],
+            })
+        data = resp.json()
+    log.info(f"setWebhook (bible) → {data}")
+    return {"ok": data.get("ok"), "webhook_url": webhook_url, "telegram_response": data}
+
+
+@app.get("/check_webhook_bible")
+async def check_webhook_bible():
+    if not BIBLE_BOT_TOKEN:
+        return {"ok": False, "error": "BIBLE_BOT_TOKEN not set"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return (await client.get(
+            f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}/getWebhookInfo")).json()
+
+
 @app.get("/import_texts")
 async def import_texts():
     if not GITHUB_TOKEN:
@@ -2094,6 +2125,119 @@ async def bible_collect_stats() -> dict:
         "notify_enabled": notify_enabled,
     }
 
+# ── Админ-панель: /users — список всех записей прогресса с удалением ──
+# Даёт администратору увидеть КАЖДУЮ строку в plan_progress (включая любые
+# "осиротевшие" записи, до которых не может дотянуться ни один обычный
+# сценарий удаления в самом мини-аппе) и удалить любую из них вручную —
+# нужно и для чистого старта при тестировании, и как способ найти запись,
+# из-за которой могут продолжать приходить напоминания после того, как
+# план вроде бы удалён в интерфейсе.
+
+async def _fetch_all_progress_rows() -> list:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            headers=SB_HEADERS,
+            params={
+                "select": "user_id,plan_id,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
+                "order": "user_id",
+            },
+        )
+        data = r.json()
+        return data if isinstance(data, list) else []
+
+_ADMIN_ROWS_LIMIT = 40
+
+def _admin_users_text(rows: list, note: str = "") -> str:
+    if not rows:
+        return (note + "\n\n" if note else "") + "👥 В plan_progress сейчас нет ни одной записи."
+    lines = [f"👥 <b>Записи прогресса</b> (всего {len(rows)}):\n"]
+    for row in rows[:_ADMIN_ROWS_LIMIT]:
+        uid = row.get("user_id")
+        pid = row.get("plan_id") or "—"
+        streak = row.get("streak", 0)
+        last = row.get("last_read_date") or "никогда"
+        notif = "🔔" if row.get("notify_on") else "🔕"
+        hh = row.get("notify_hour_msk")
+        mm = row.get("notify_minute_msk", 0)
+        time_s = f"{hh:02d}:{mm:02d}" if hh is not None else "—"
+        lines.append(f"• <code>{uid}</code> — <b>{pid}</b> · 🔥{streak} · {last} · {notif} {time_s}")
+    if len(rows) > _ADMIN_ROWS_LIMIT:
+        lines.append(f"\n… и ещё {len(rows) - _ADMIN_ROWS_LIMIT}. Показаны первые {_ADMIN_ROWS_LIMIT}.")
+    lines.append("\nНажми на кнопку под сообщением, чтобы удалить запись.")
+    text = "\n".join(lines)
+    return (note + "\n\n" + text) if note else text
+
+def _admin_users_markup(rows: list) -> dict:
+    buttons = []
+    for row in rows[:_ADMIN_ROWS_LIMIT]:
+        uid = row.get("user_id")
+        pid = row.get("plan_id") or "?"
+        label = f"🗑 {uid} · {pid}"
+        if len(label) > 60:
+            label = label[:57] + "…"
+        buttons.append([{"text": label, "callback_data": f"adm_del:{uid}:{pid}"}])
+    if not buttons:
+        return {"inline_keyboard": []}
+    return {"inline_keyboard": buttons}
+
+async def _handle_admin_callback(callback: dict):
+    cq_id = callback.get("id")
+    sender_id = (callback.get("from") or {}).get("id")
+    msg = callback.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    message_id = msg.get("message_id")
+    data_str = callback.get("data") or ""
+
+    if sender_id not in BIBLE_ADMIN_USER_IDS:
+        await bible_answer_callback(cq_id, "Только для администратора")
+        return
+    if not chat_id or not message_id:
+        await bible_answer_callback(cq_id)
+        return
+
+    parts = data_str.split(":")
+    action = parts[0] if parts else ""
+
+    if action == "adm_list":
+        await bible_answer_callback(cq_id)
+        rows = await _fetch_all_progress_rows()
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows), _admin_users_markup(rows))
+        return
+
+    if action == "adm_del" and len(parts) == 3:
+        uid_s, pid = parts[1], parts[2]
+        await bible_answer_callback(cq_id)
+        await bible_edit_message(
+            chat_id, message_id,
+            f"⚠️ <b>Точно удалить эту запись?</b>\n\nПользователь: <code>{uid_s}</code>\nПлан: <b>{pid}</b>\n\nЭто действие необратимо — стрик, дни и время напоминания этого плана будут стёрты.",
+            {"inline_keyboard": [[
+                {"text": "✅ Да, удалить", "callback_data": f"adm_yes:{uid_s}:{pid}"},
+                {"text": "❌ Отмена", "callback_data": "adm_list"},
+            ]]},
+        )
+        return
+
+    if action == "adm_yes" and len(parts) == 3:
+        try:
+            uid = int(parts[1])
+        except ValueError:
+            await bible_answer_callback(cq_id, "Ошибка данных")
+            return
+        pid = parts[2]
+        ok, deleted = await _delete_progress_row(uid, pid)
+        await bible_answer_callback(cq_id, "Удалено ✅" if ok else "Не удалось ❌")
+        note = (
+            f"✅ Запись <code>{uid}</code> / <b>{pid}</b> удалена."
+            if ok else
+            f"❌ Не удалось удалить <code>{uid}</code> / <b>{pid}</b> — 0 строк реально стёрто. Проверь логи сервера (возможно, RLS в Supabase блокирует DELETE)."
+        )
+        rows = await _fetch_all_progress_rows()
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, note), _admin_users_markup(rows))
+        return
+
+    await bible_answer_callback(cq_id)
+
 # ── Supabase: app_state (единый аккаунт на всех устройствах) ──
 
 async def sb_state_get(user_id: int):
@@ -2122,6 +2266,24 @@ async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
         payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient() as client:
         await client.post(f"{BIBLE_API}/sendMessage", json=payload)
+
+async def bible_answer_callback(callback_query_id: str, text: str = None):
+    """Гасит "часики" на нажатой инлайн-кнопке. text (если задан) показывается
+    пользователю всплывающим тостом поверх экрана, а не отдельным сообщением."""
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{BIBLE_API}/answerCallbackQuery", json=payload)
+
+async def bible_edit_message(chat_id: int, message_id: int, text: str, reply_markup: dict = None):
+    """Редактирует уже отправленное сообщение на месте — админ-панель
+    (список → подтверждение → результат) живёт в одном сообщении, а не
+    плодит новые при каждом нажатии."""
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+    payload["reply_markup"] = reply_markup or {"inline_keyboard": []}
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{BIBLE_API}/editMessageText", json=payload)
 
 def _bible_url() -> str:
     """Добавляем метку времени к ссылке — иначе Telegram кэширует старую версию
@@ -2296,6 +2458,38 @@ async def bible_read(body: BibleReadBody):
     })
     return {"ok": True, "streak": streak, "max_streak": max_streak}
 
+async def _delete_progress_row(user_id: int, plan_id: str) -> tuple:
+    """Удаляет строку прогресса (user_id, plan_id) из plan_progress и
+    ПРОВЕРЯЕТ, что она реально исчезла, а не просто отправляет запрос и
+    надеется на лучшее. Возвращает (ok, deleted_count). Раньше это было
+    зашито прямо в /plan/unregister и всегда молча врало об успехе — теперь
+    общая функция, которой пользуется и HTTP-эндпоинт, и админ-панель
+    (/users), так что поведение гарантированно одинаковое в обоих местах."""
+    existing = await sb_get_one(user_id, plan_id)
+    if not existing:
+        return True, 0
+    async with httpx.AsyncClient() as client:
+        r = await client.delete(
+            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            headers={**SB_HEADERS, "Prefer": "return=representation"},
+            params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
+        )
+    try:
+        deleted_rows = r.json() if r.status_code in (200, 204) else []
+    except Exception:
+        deleted_rows = []
+    if not isinstance(deleted_rows, list):
+        deleted_rows = []
+    ok = bool(deleted_rows)
+    if not ok:
+        log.error(
+            f"_delete_progress_row: DELETE не удалил строку user={user_id} "
+            f"plan={plan_id} — status={r.status_code}, body={r.text[:300]!r}. "
+            f"Возможно, в Supabase включён RLS без политики DELETE для plan_progress."
+        )
+    return ok, len(deleted_rows)
+
+
 @app.post("/plan/unregister")
 async def bible_unregister(body: BibleUnregisterBody):
     """Полностью удаляет строку прогресса КОНКРЕТНОГО плана из plan_progress
@@ -2304,14 +2498,17 @@ async def bible_unregister(body: BibleUnregisterBody):
     только локальное состояние (app_state) — канонические данные на сервере
     (streak, days_done и т.д.) оставались нетронутыми, из-за чего виджет
     "План" и push-уведомления продолжали показывать прогресс уже удалённого
-    плана."""
-    async with httpx.AsyncClient() as client:
-        await client.delete(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{body.user_id}", "plan_id": f"eq.{body.plan_id}"},
-        )
-    return {"ok": True}
+    плана.
+
+    ВАЖНО: раньше этот эндпоинт всегда возвращал {"ok": true}, даже если
+    DELETE фактически не удалил ни одной строки (например, если в Supabase
+    включён Row Level Security без политики на DELETE — тогда запрос
+    отрабатывает без ошибки, но удаляет 0 строк). Из-за этого клиентский
+    retry/toast при сбое никогда не срабатывал: сервер врал об успехе.
+    Теперь мы явно проверяем, что строка (а) существовала и (б) реально
+    исчезла после запроса."""
+    ok, deleted = await _delete_progress_row(body.user_id, body.plan_id)
+    return {"ok": ok, "deleted": deleted}
 
 @app.post("/plan/merge_days")
 async def bible_merge_days(body: BibleMergeDaysBody):
@@ -2378,6 +2575,15 @@ async def bible_webhook(request: Request):
         data = await request.json()
     except Exception:
         return {"ok": False}
+
+    # Нажатия инлайн-кнопок (админ-панель /users) приходят отдельным типом
+    # апдейта callback_query, а не message — раньше вебхук их вообще не
+    # обрабатывал.
+    callback = data.get("callback_query")
+    if callback:
+        await _handle_admin_callback(callback)
+        return {"ok": True}
+
     message = data.get("message", {})
     if not message:
         return {"ok": True}
@@ -2385,8 +2591,9 @@ async def bible_webhook(request: Request):
     if not chat_id:
         return {"ok": True}
 
-    # /stats — только для владельца/админа бота (BIBLE_ADMIN_USER_IDS), обычным
-    # пользователям недоступно и никак не отражается в их сценарии приветствия.
+    # /stats и /users — только для владельца/админа бота (BIBLE_ADMIN_USER_IDS),
+    # обычным пользователям недоступны и никак не отражаются в их сценарии
+    # приветствия.
     sender_id = (message.get("from") or {}).get("id")
     text = (message.get("text") or "").strip()
     if text == "/stats":
@@ -2403,6 +2610,15 @@ async def bible_webhook(request: Request):
                     f"📅 Читали за последние 7 дней: <b>{s['active_7d']}</b>\n"
                     f"🔔 С включёнными напоминаниями: <b>{s['notify_enabled']}</b>",
                 )
+        return {"ok": True}
+
+    if text == "/users":
+        if sender_id in BIBLE_ADMIN_USER_IDS:
+            if not SUPABASE_URL:
+                await bible_send(chat_id, "SUPABASE_URL не настроен.")
+            else:
+                rows = await _fetch_all_progress_rows()
+                await bible_send(chat_id, _admin_users_text(rows), _admin_users_markup(rows))
         return {"ok": True}
 
     if text == SHARE_BTN_TEXT:
