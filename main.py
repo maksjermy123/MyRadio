@@ -2170,6 +2170,7 @@ def _admin_users_text(rows: list, note: str = "") -> str:
 
 def _admin_users_markup(rows: list) -> dict:
     buttons = []
+    seen_users = []
     for row in rows[:_ADMIN_ROWS_LIMIT]:
         uid = row.get("user_id")
         pid = row.get("plan_id") or "?"
@@ -2177,9 +2178,43 @@ def _admin_users_markup(rows: list) -> dict:
         if len(label) > 60:
             label = label[:57] + "…"
         buttons.append([{"text": label, "callback_data": f"adm_del:{uid}:{pid}"}])
+        if uid not in seen_users:
+            seen_users.append(uid)
+    # Отдельная кнопка на каждого пользователя — полный сброс (все планы +
+    # app_state), а не только одна конкретная строка прогресса. Это и есть
+    # настоящий "чистый лист" для тестовой регистрации.
+    for uid in seen_users:
+        buttons.append([{"text": f"🧨 Сбросить всё у {uid}", "callback_data": f"adm_wipe:{uid}"}])
     if not buttons:
         return {"inline_keyboard": []}
     return {"inline_keyboard": buttons}
+
+async def _delete_app_state_row(user_id: int) -> None:
+    """Удаляет строку app_state (полный слепок мини-аппа: выбранные планы,
+    их локальный прогресс, настройки) для пользователя. БЕЗ этого шага
+    очистка одной только plan_progress не даёт настоящего чистого листа:
+    при следующем открытии мини-аппа syncBackend() безусловно перезаписывает
+    локальное состояние сохранённым на сервере app_state — и старые планы
+    просто восстанавливаются заново, будто ничего не удаляли."""
+    async with httpx.AsyncClient() as client:
+        await client.delete(
+            f"{SUPABASE_URL}/rest/v1/app_state",
+            headers=SB_HEADERS,
+            params={"user_id": f"eq.{user_id}"},
+        )
+
+async def _wipe_user_completely(user_id: int) -> int:
+    """Удаляет ВСЕ строки прогресса пользователя (по каждому его плану) и
+    его app_state — используется кнопкой "🧨 Сбросить всё" в /users.
+    Возвращает число реально удалённых строк plan_progress."""
+    rows = await sb_get_all(user_id)
+    deleted = 0
+    for row in rows:
+        ok, n = await _delete_progress_row(user_id, row.get("plan_id"))
+        if ok:
+            deleted += n
+    await _delete_app_state_row(user_id)
+    return deleted
 
 async def _handle_admin_callback(callback: dict):
     cq_id = callback.get("id")
@@ -2232,6 +2267,36 @@ async def _handle_admin_callback(callback: dict):
             if ok else
             f"❌ Не удалось удалить <code>{uid}</code> / <b>{pid}</b> — 0 строк реально стёрто. Проверь логи сервера (возможно, RLS в Supabase блокирует DELETE)."
         )
+        rows = await _fetch_all_progress_rows()
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, note), _admin_users_markup(rows))
+        return
+
+    if action == "adm_wipe" and len(parts) == 2:
+        uid_s = parts[1]
+        await bible_answer_callback(cq_id)
+        await bible_edit_message(
+            chat_id, message_id,
+            f"🧨 <b>Полностью сбросить пользователя {uid_s}?</b>\n\n"
+            f"Будут удалены ВСЕ его планы, стрики, дни чтения И локальное "
+            f"состояние мини-аппа (app_state) — то есть при следующем "
+            f"открытии он увидит приветственный экран, как в первый раз.\n\n"
+            f"Это действие необратимо.",
+            {"inline_keyboard": [[
+                {"text": "✅ Да, сбросить всё", "callback_data": f"adm_wipeyes:{uid_s}"},
+                {"text": "❌ Отмена", "callback_data": "adm_list"},
+            ]]},
+        )
+        return
+
+    if action == "adm_wipeyes" and len(parts) == 2:
+        try:
+            uid = int(parts[1])
+        except ValueError:
+            await bible_answer_callback(cq_id, "Ошибка данных")
+            return
+        deleted = await _wipe_user_completely(uid)
+        await bible_answer_callback(cq_id, "Сброшено ✅")
+        note = f"🧨 Пользователь <code>{uid}</code> полностью сброшен ({deleted} план(ов) удалено, app_state очищен)."
         rows = await _fetch_all_progress_rows()
         await bible_edit_message(chat_id, message_id, _admin_users_text(rows, note), _admin_users_markup(rows))
         return
