@@ -2245,7 +2245,7 @@ async def _handle_admin_callback(callback: dict):
         await bible_answer_callback(cq_id)
         await bible_edit_message(
             chat_id, message_id,
-            f"⚠️ <b>Точно удалить эту запись?</b>\n\nПользователь: <code>{uid_s}</code>\nПлан: <b>{pid}</b>\n\nЭто действие необратимо — стрик, дни и время напоминания этого плана будут стёрты.",
+            f"⚠️ <b>Точно удалить этот план?</b>\n\nПользователь: <code>{uid_s}</code>\nПлан: <b>{pid}</b>\n\nСтрик, дни и время напоминания этого плана будут стёрты — и из базы прогресса, и из самого мини-аппа у пользователя. Остальные его планы, закладки и настройки не тронутся.",
             {"inline_keyboard": [[
                 {"text": "✅ Да, удалить", "callback_data": f"adm_yes:{uid_s}:{pid}"},
                 {"text": "❌ Отмена", "callback_data": "adm_list"},
@@ -2277,9 +2277,10 @@ async def _handle_admin_callback(callback: dict):
         await bible_edit_message(
             chat_id, message_id,
             f"🧨 <b>Полностью сбросить пользователя {uid_s}?</b>\n\n"
-            f"Будут удалены ВСЕ его планы, стрики, дни чтения И локальное "
-            f"состояние мини-аппа (app_state) — то есть при следующем "
-            f"открытии он увидит приветственный экран, как в первый раз.\n\n"
+            f"В отличие от 🗑 (убирает один план), это удалит АБСОЛЮТНО ВСЁ: "
+            f"все его планы, стрики, дни чтения, закладки, тему и шрифт — "
+            f"то есть при следующем открытии он увидит приветственный экран, "
+            f"как в первый раз.\n\n"
             f"Это действие необратимо.",
             {"inline_keyboard": [[
                 {"text": "✅ Да, сбросить всё", "callback_data": f"adm_wipeyes:{uid_s}"},
@@ -2318,10 +2319,37 @@ async def sb_state_get(user_id: int):
 async def sb_state_upsert(user_id: int, data: dict):
     async with httpx.AsyncClient() as client:
         await client.post(
-            f"{SUPABASE_URL}/rest/v1/app_state",
+            f"{SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id",
             headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
             json={"user_id": user_id, "data": data},
         )
+
+async def _remove_plan_from_app_state(user_id: int, plan_id: str) -> None:
+    """Хирургически убирает ОДИН план из app_state (локального слепка
+    мини-аппа: выбранные планы, их локальный прогресс, настройки, темы,
+    закладки), не трогая ничего остального у этого пользователя. Нужен,
+    чтобы удаление конкретного плана (через /plan/unregister — как из
+    самого мини-аппа, так и из админ-кнопки 🗑) не оставляло его "призрак"
+    в app_state: это отдельное хранилище дублирует прогресс внутри
+    app_state.data.progress[plan_id] независимо от канонической строки
+    в plan_progress, и раньше при удалении только последней план оставался
+    видимым (и рабочим лишь наполовину) в самом мини-аппе."""
+    row = await sb_state_get(user_id)
+    if not row:
+        return
+    blob = row.get("data") or {}
+    changed = False
+    if isinstance(blob.get("progress"), dict) and plan_id in blob["progress"]:
+        del blob["progress"][plan_id]
+        changed = True
+    if isinstance(blob.get("customPlans"), dict) and plan_id in blob["customPlans"]:
+        del blob["customPlans"][plan_id]
+        changed = True
+    if blob.get("activePlanId") == plan_id:
+        blob["activePlanId"] = None
+        changed = True
+    if changed:
+        await sb_state_upsert(user_id, blob)
 
 # ── Telegram ──────────────────────────────────────────────────
 
@@ -2552,6 +2580,11 @@ async def _delete_progress_row(user_id: int, plan_id: str) -> tuple:
             f"plan={plan_id} — status={r.status_code}, body={r.text[:300]!r}. "
             f"Возможно, в Supabase включён RLS без политики DELETE для plan_progress."
         )
+    if ok:
+        # Убираем этот же план и из app_state — иначе он остаётся "призраком"
+        # в самом мини-аппе: видимым, но без канонической строки прогресса
+        # (не отмечается прочитанным, не шлёт уведомления).
+        await _remove_plan_from_app_state(user_id, plan_id)
     return ok, len(deleted_rows)
 
 
