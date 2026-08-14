@@ -2151,42 +2151,32 @@ _ADMIN_ROWS_LIMIT = 40
 def _admin_users_text(rows: list, note: str = "") -> str:
     if not rows:
         return (note + "\n\n" if note else "") + "👥 В plan_progress сейчас нет ни одной записи."
-    lines = [f"👥 <b>Записи прогресса</b> (всего {len(rows)}):\n"]
-    for row in rows[:_ADMIN_ROWS_LIMIT]:
-        uid = row.get("user_id")
-        pid = row.get("plan_id") or "—"
-        streak = row.get("streak", 0)
-        last = row.get("last_read_date") or "никогда"
-        notif = "🔔" if row.get("notify_on") else "🔕"
-        hh = row.get("notify_hour_msk")
-        mm = row.get("notify_minute_msk", 0)
-        time_s = f"{hh:02d}:{mm:02d}" if hh is not None else "—"
-        lines.append(f"• <code>{uid}</code> — <b>{pid}</b> · 🔥{streak} · {last} · {notif} {time_s}")
-    if len(rows) > _ADMIN_ROWS_LIMIT:
-        lines.append(f"\n… и ещё {len(rows) - _ADMIN_ROWS_LIMIT}. Показаны первые {_ADMIN_ROWS_LIMIT}.")
-    lines.append("\nНажми на кнопку под сообщением, чтобы удалить запись.")
+    by_user = {}
+    for row in rows:
+        by_user.setdefault(row.get("user_id"), []).append(row)
+    lines = [f"👥 <b>Пользователи</b> (всего {len(by_user)}):\n"]
+    for uid, urows in list(by_user.items())[:_ADMIN_ROWS_LIMIT]:
+        plans_s = ", ".join(
+            f"{r.get('plan_id') or '—'} (🔥{r.get('streak', 0)}, {r.get('last_read_date') or 'никогда'})"
+            for r in urows
+        )
+        lines.append(f"• <code>{uid}</code> — {plans_s}")
+    if len(by_user) > _ADMIN_ROWS_LIMIT:
+        lines.append(f"\n… и ещё {len(by_user) - _ADMIN_ROWS_LIMIT}. Показаны первые {_ADMIN_ROWS_LIMIT}.")
+    lines.append("\nНажми на кнопку под сообщением, чтобы полностью удалить пользователя.")
     text = "\n".join(lines)
     return (note + "\n\n" + text) if note else text
 
 def _admin_users_markup(rows: list) -> dict:
-    buttons = []
     seen_users = []
-    for row in rows[:_ADMIN_ROWS_LIMIT]:
+    for row in rows:
         uid = row.get("user_id")
-        pid = row.get("plan_id") or "?"
-        label = f"🗑 {uid} · {pid}"
-        if len(label) > 60:
-            label = label[:57] + "…"
-        buttons.append([{"text": label, "callback_data": f"adm_del:{uid}:{pid}"}])
         if uid not in seen_users:
             seen_users.append(uid)
-    # Отдельная кнопка на каждого пользователя — полный сброс (все планы +
-    # app_state), а не только одна конкретная строка прогресса. Это и есть
-    # настоящий "чистый лист" для тестовой регистрации.
-    for uid in seen_users:
-        buttons.append([{"text": f"🧨 Сбросить всё у {uid}", "callback_data": f"adm_wipe:{uid}"}])
-    if not buttons:
-        return {"inline_keyboard": []}
+    buttons = [
+        [{"text": f"🗑 Удалить {uid}", "callback_data": f"adm_del:{uid}"}]
+        for uid in seen_users[:_ADMIN_ROWS_LIMIT]
+    ]
     return {"inline_keyboard": buttons}
 
 async def _delete_app_state_row(user_id: int) -> None:
@@ -2205,7 +2195,12 @@ async def _delete_app_state_row(user_id: int) -> None:
 
 async def _wipe_user_completely(user_id: int) -> int:
     """Удаляет ВСЕ строки прогресса пользователя (по каждому его плану) и
-    его app_state — используется кнопкой "🧨 Сбросить всё" в /users.
+    его app_state. Это единственное, что делает админ-панель /users —
+    точечное удаление одного плана пользователь и так может сделать сам
+    прямо в мини-аппе (кнопка 🗑 у плана), администратору нужно только
+    полное удаление аккаунта целиком: для поддержки и для чистого старта
+    при тестировании. После этого при следующей регистрации пользователь
+    увидит стартовый экран, как будто зашёл впервые.
     Возвращает число реально удалённых строк plan_progress."""
     rows = await sb_get_all(user_id)
     deleted = 0
@@ -2240,64 +2235,32 @@ async def _handle_admin_callback(callback: dict):
         await bible_edit_message(chat_id, message_id, _admin_users_text(rows), _admin_users_markup(rows))
         return
 
-    if action == "adm_del" and len(parts) == 3:
-        uid_s, pid = parts[1], parts[2]
-        await bible_answer_callback(cq_id)
-        await bible_edit_message(
-            chat_id, message_id,
-            f"⚠️ <b>Точно удалить этот план?</b>\n\nПользователь: <code>{uid_s}</code>\nПлан: <b>{pid}</b>\n\nСтрик, дни и время напоминания этого плана будут стёрты — и из базы прогресса, и из самого мини-аппа у пользователя. Остальные его планы, закладки и настройки не тронутся.",
-            {"inline_keyboard": [[
-                {"text": "✅ Да, удалить", "callback_data": f"adm_yes:{uid_s}:{pid}"},
-                {"text": "❌ Отмена", "callback_data": "adm_list"},
-            ]]},
-        )
-        return
-
-    if action == "adm_yes" and len(parts) == 3:
-        try:
-            uid = int(parts[1])
-        except ValueError:
-            await bible_answer_callback(cq_id, "Ошибка данных")
-            return
-        pid = parts[2]
-        ok, deleted = await _delete_progress_row(uid, pid)
-        await bible_answer_callback(cq_id, "Удалено ✅" if ok else "Не удалось ❌")
-        note = (
-            f"✅ Запись <code>{uid}</code> / <b>{pid}</b> удалена."
-            if ok else
-            f"❌ Не удалось удалить <code>{uid}</code> / <b>{pid}</b> — 0 строк реально стёрто. Проверь логи сервера (возможно, RLS в Supabase блокирует DELETE)."
-        )
-        rows = await _fetch_all_progress_rows()
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, note), _admin_users_markup(rows))
-        return
-
-    if action == "adm_wipe" and len(parts) == 2:
+    if action == "adm_del" and len(parts) == 2:
         uid_s = parts[1]
         await bible_answer_callback(cq_id)
         await bible_edit_message(
             chat_id, message_id,
-            f"🧨 <b>Полностью сбросить пользователя {uid_s}?</b>\n\n"
-            f"В отличие от 🗑 (убирает один план), это удалит АБСОЛЮТНО ВСЁ: "
-            f"все его планы, стрики, дни чтения, закладки, тему и шрифт — "
-            f"то есть при следующем открытии он увидит приветственный экран, "
-            f"как в первый раз.\n\n"
+            f"⚠️ <b>Точно удалить пользователя {uid_s} целиком?</b>\n\n"
+            f"Будут стёрты все его планы, стрики, дни чтения, закладки, "
+            f"тема и шрифт — то есть при следующей регистрации он увидит "
+            f"стартовый экран, как будто зашёл впервые.\n\n"
             f"Это действие необратимо.",
             {"inline_keyboard": [[
-                {"text": "✅ Да, сбросить всё", "callback_data": f"adm_wipeyes:{uid_s}"},
+                {"text": "✅ Да, удалить", "callback_data": f"adm_delyes:{uid_s}"},
                 {"text": "❌ Отмена", "callback_data": "adm_list"},
             ]]},
         )
         return
 
-    if action == "adm_wipeyes" and len(parts) == 2:
+    if action == "adm_delyes" and len(parts) == 2:
         try:
             uid = int(parts[1])
         except ValueError:
             await bible_answer_callback(cq_id, "Ошибка данных")
             return
         deleted = await _wipe_user_completely(uid)
-        await bible_answer_callback(cq_id, "Сброшено ✅")
-        note = f"🧨 Пользователь <code>{uid}</code> полностью сброшен ({deleted} план(ов) удалено, app_state очищен)."
+        await bible_answer_callback(cq_id, "Удалено ✅")
+        note = f"✅ Пользователь <code>{uid}</code> полностью удалён ({deleted} план(ов) удалено, app_state очищен)."
         rows = await _fetch_all_progress_rows()
         await bible_edit_message(chat_id, message_id, _admin_users_text(rows, note), _admin_users_markup(rows))
         return
