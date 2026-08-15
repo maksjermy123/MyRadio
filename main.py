@@ -2038,13 +2038,29 @@ async def sb_get_one(user_id: int, plan_id: str):
         data = r.json()
         return data[0] if isinstance(data, list) and data else None
 
-async def sb_upsert(payload: dict):
+async def sb_upsert(payload: dict) -> tuple:
+    """Возвращает (ok, error). Раньше здесь ответ Supabase вообще не
+    проверялся — если запись падала (например, ON CONFLICT (user_id,
+    plan_id) не совпадает ни с одним реальным constraint'ом в таблице —
+    именно так ведёт себя Postgres, если уникальность в plan_progress
+    задана только по user_id), /plan/register всё равно молча отвечал
+    {"ok": true}, будто второй план зарегистрировался. На деле строка не
+    создавалась, и следующий /plan/read честно, но неожиданно для клиента
+    отвечал "not registered" — план как будто испарялся."""
     async with httpx.AsyncClient() as client:
-        await client.post(
+        r = await client.post(
             f"{SUPABASE_URL}/rest/v1/plan_progress?on_conflict=user_id,plan_id",
             headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
             json=payload,
         )
+    if r.status_code >= 300:
+        try:
+            err = r.json()
+        except Exception:
+            err = r.text
+        print(f"[sb_upsert] FAILED {r.status_code} for {payload.get('user_id')}/{payload.get('plan_id')}: {err}")
+        return False, str(err)
+    return True, None
 
 async def sb_patch(user_id: int, plan_id: str, payload: dict):
     async with httpx.AsyncClient() as client:
@@ -2146,15 +2162,45 @@ async def _fetch_all_progress_rows() -> list:
         data = r.json()
         return data if isinstance(data, list) else []
 
+async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
+    """Пользователи, у которых есть слепок app_state, но НИ ОДНОЙ строки в
+    plan_progress. Раньше их вообще не было видно через /users — админ-панель
+    строилась только по plan_progress, поэтому такого пользователя приходилось
+    искать и удалять вручную через SQL Editor в Supabase (именно так и было
+    сегодня с реальным призрачным app_state). Это ровно то состояние, которое
+    возникает из-за бага «воскрешения» localStorage (см. checkAccountReset на
+    клиенте): plan_progress уже пуст, а app_state — ещё нет."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/app_state",
+            headers=SB_HEADERS,
+            params={"select": "user_id", "order": "user_id"},
+        )
+    try:
+        data = r.json()
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        data = []
+    seen = set()
+    orphans = []
+    for row in data:
+        uid = row.get("user_id")
+        if uid is None or uid in known_user_ids or uid in seen:
+            continue
+        seen.add(uid)
+        orphans.append(uid)
+    return orphans
+
 _ADMIN_ROWS_LIMIT = 40
 
-def _admin_users_text(rows: list, note: str = "") -> str:
-    if not rows:
-        return (note + "\n\n" if note else "") + "👥 В plan_progress сейчас нет ни одной записи."
+def _admin_users_text(rows: list, orphan_ids: list, note: str = "") -> str:
+    if not rows and not orphan_ids:
+        return (note + "\n\n" if note else "") + "👥 В plan_progress и app_state сейчас нет ни одной записи."
     by_user = {}
     for row in rows:
         by_user.setdefault(row.get("user_id"), []).append(row)
-    lines = [f"👥 <b>Пользователи</b> (всего {len(by_user)}):\n"]
+    lines = [f"👥 <b>Пользователи</b> (всего {len(by_user) + len(orphan_ids)}):\n"]
     for uid, urows in list(by_user.items())[:_ADMIN_ROWS_LIMIT]:
         plans_s = ", ".join(
             f"{r.get('plan_id') or '—'} (🔥{r.get('streak', 0)}, {r.get('last_read_date') or 'никогда'})"
@@ -2163,11 +2209,17 @@ def _admin_users_text(rows: list, note: str = "") -> str:
         lines.append(f"• <code>{uid}</code> — {plans_s}")
     if len(by_user) > _ADMIN_ROWS_LIMIT:
         lines.append(f"\n… и ещё {len(by_user) - _ADMIN_ROWS_LIMIT}. Показаны первые {_ADMIN_ROWS_LIMIT}.")
+    if orphan_ids:
+        lines.append("\n🌫 <b>Только app_state, планов нет</b> (осиротевшие записи):")
+        for uid in orphan_ids[:_ADMIN_ROWS_LIMIT]:
+            lines.append(f"• <code>{uid}</code> — есть слепок мини-аппа, ни одного плана в plan_progress")
+        if len(orphan_ids) > _ADMIN_ROWS_LIMIT:
+            lines.append(f"\n… и ещё {len(orphan_ids) - _ADMIN_ROWS_LIMIT} осиротевших.")
     lines.append("\nНажми на кнопку под сообщением, чтобы полностью удалить пользователя.")
     text = "\n".join(lines)
     return (note + "\n\n" + text) if note else text
 
-def _admin_users_markup(rows: list) -> dict:
+def _admin_users_markup(rows: list, orphan_ids: list) -> dict:
     seen_users = []
     for row in rows:
         uid = row.get("user_id")
@@ -2176,6 +2228,10 @@ def _admin_users_markup(rows: list) -> dict:
     buttons = [
         [{"text": f"🗑 Удалить {uid}", "callback_data": f"adm_del:{uid}"}]
         for uid in seen_users[:_ADMIN_ROWS_LIMIT]
+    ]
+    buttons += [
+        [{"text": f"🗑 Удалить {uid} (🌫 осиротевший)", "callback_data": f"adm_del:{uid}"}]
+        for uid in orphan_ids[:_ADMIN_ROWS_LIMIT]
     ]
     return {"inline_keyboard": buttons}
 
@@ -2233,7 +2289,8 @@ async def _handle_admin_callback(callback: dict):
     if action == "adm_list":
         await bible_answer_callback(cq_id)
         rows = await _fetch_all_progress_rows()
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows), _admin_users_markup(rows))
+        orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
         return
 
     if action == "adm_del" and len(parts) == 2:
@@ -2263,7 +2320,8 @@ async def _handle_admin_callback(callback: dict):
         await bible_answer_callback(cq_id, "Удалено ✅")
         note = f"✅ Пользователь <code>{uid}</code> полностью удалён ({deleted} план(ов) удалено, app_state очищен)."
         rows = await _fetch_all_progress_rows()
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, note), _admin_users_markup(rows))
+        orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, note), _admin_users_markup(rows, orphans))
         return
 
     await bible_answer_callback(cq_id)
@@ -2512,7 +2570,7 @@ class StateBody(BaseModel):
 @app.post("/plan/register")
 async def bible_register(body: BibleRegisterBody):
     from datetime import date
-    await sb_upsert({
+    ok, err = await sb_upsert({
         "user_id": body.user_id,
         "plan_id": body.plan_id,
         "start_date": date.today().isoformat(),
@@ -2522,6 +2580,8 @@ async def bible_register(body: BibleRegisterBody):
         "streak": 0, "max_streak": 0,
         "last_read_date": None, "days_done": [],
     })
+    if not ok:
+        return {"ok": False, "error": err}
     return {"ok": True}
 
 @app.get("/plan/status")
@@ -2743,7 +2803,8 @@ async def bible_webhook(request: Request):
                 await bible_send(chat_id, "SUPABASE_URL не настроен.")
             else:
                 rows = await _fetch_all_progress_rows()
-                await bible_send(chat_id, _admin_users_text(rows), _admin_users_markup(rows))
+                orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
+                await bible_send(chat_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
         return {"ok": True}
 
     if text == SHARE_BTN_TEXT:
