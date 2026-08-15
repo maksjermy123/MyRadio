@@ -539,7 +539,10 @@ var PLAN_TITLES={
   chrono_365:'Хронологический план',
   bible_365:'Библия за год'
 };
-function planTitle(planId){
+function planTitle(d){
+  var planId=(d&&typeof d==='object')?d.plan_id:d;
+  var realTitle=(d&&typeof d==='object')?d.title:null;
+  if(realTitle)return realTitle;
   if(PLAN_TITLES[planId])return PLAN_TITLES[planId];
   if(planId&&planId.charAt(0)==='c')return 'Свой план';
   return 'План чтения';
@@ -564,7 +567,7 @@ function planSummary(d){
   } else {
     emoji='🌱';headline='Ты начал план — читай дальше!';
   }
-  return {emoji:emoji,headline:headline,streak:streak,daysDone:daysDone,title:planTitle(d.plan_id)};
+  return {emoji:emoji,headline:headline,streak:streak,daysDone:daysDone,title:planTitle(d)};
 }
 function renderPlanProgress(body,plans){
   if(!plans||!plans.length){renderPlanInvite(body);return;}
