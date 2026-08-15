@@ -2209,6 +2209,7 @@ async def _wipe_user_completely(user_id: int) -> int:
         if ok:
             deleted += n
     await _delete_app_state_row(user_id)
+    await sb_account_rotate_reset(user_id)
     return deleted
 
 async def _handle_admin_callback(callback: dict):
@@ -2285,6 +2286,60 @@ async def sb_state_upsert(user_id: int, data: dict):
             f"{SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id",
             headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
             json={"user_id": user_id, "data": data},
+        )
+
+# ── Supabase: bible_accounts (переживает удаление пользователя) ──
+# Отдельная от plan_progress/app_state табличка-маячок: одна строка на
+# user_id, которая НИКОГДА не удаляется при /users → 🗑, а только меняет
+# reset_token. Нужна затем, что plan_progress и app_state после удаления
+# исчезают полностью, и клиент не может отличить "я новый пользователь"
+# от "меня только что стёрли" — оба случая выглядят как "на сервере
+# ничего нет". Смена reset_token — единственный сигнал, который переживает
+# сам факт удаления и позволяет клиенту понять, что его localStorage устарел
+# и не должен "воскрешать" стёртые данные через syncBackend()/pushState().
+
+async def sb_account_get(user_id: int):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts",
+            headers=SB_HEADERS,
+            params={"user_id": f"eq.{user_id}", "limit": "1"},
+        )
+        data = r.json()
+        return data[0] if isinstance(data, list) and data else None
+
+async def sb_account_ensure(user_id: int) -> dict:
+    """Отдаёт строку аккаунта с её reset_token, создавая её при первом
+    обращении (Prefer: resolution=merge-duplicates делает это безопасным
+    upsert'ом — повторный вызов для уже существующего user_id ничего не
+    сломает и не тронет уже сохранённый token благодаря on_conflict)."""
+    row = await sb_account_get(user_id)
+    if row:
+        return row
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json={"user_id": user_id},
+        )
+    try:
+        data = r.json()
+    except Exception:
+        data = None
+    return data[0] if isinstance(data, list) and data else {"user_id": user_id, "reset_token": None}
+
+async def sb_account_rotate_reset(user_id: int) -> None:
+    """Вызывается ТОЛЬКО из админ-панели /users при полном удалении
+    пользователя (_wipe_user_completely). Строка bible_accounts НЕ
+    удаляется — только получает новый случайный reset_token. Именно смена
+    токена (а не сам факт исчезновения app_state) — то, что клиент сверяет
+    в checkAccountReset() перед тем, как синхронизировать состояние."""
+    import uuid
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json={"user_id": user_id, "reset_token": str(uuid.uuid4())},
         )
 
 async def _remove_plan_from_app_state(user_id: int, plan_id: str) -> None:
@@ -2615,6 +2670,15 @@ async def bible_settings(body: BibleSettingsBody):
     return {"ok": True}
 
 # ── Endpoints: единый аккаунт (полное состояние приложения) ──
+
+@app.get("/account/status")
+async def account_status(user_id: int):
+    """Клиент дергает это ПЕРЕД синхронизацией app_state (см. checkAccountReset
+    в index.html). Если сохранённый локально reset_token отличается от
+    того, что вернул этот эндпоинт — значит аккаунт сбрасывали через /users
+    с прошлого раза, и localStorage нужно стереть до пуша на сервер."""
+    row = await sb_account_ensure(user_id)
+    return {"reset_token": row.get("reset_token")}
 
 @app.get("/state")
 async def get_state(user_id: int):
