@@ -2092,7 +2092,7 @@ async def sb_get_due(hour: int, minute: int) -> list:
                 "notify_minute_msk": f"eq.{minute}",
                 "notify_on": "eq.true",
                 "last_read_date": f"neq.{today}",
-                "select": "user_id,plan_id,streak,start_date,days_done",
+                "select": "user_id,plan_id,title,streak,start_date,days_done",
             },
         )
         return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
@@ -2155,7 +2155,7 @@ async def _fetch_all_progress_rows() -> list:
             f"{SUPABASE_URL}/rest/v1/plan_progress",
             headers=SB_HEADERS,
             params={
-                "select": "user_id,plan_id,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
+                "select": "user_id,plan_id,title,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
                 "order": "user_id",
             },
         )
@@ -2203,7 +2203,7 @@ def _admin_users_text(rows: list, orphan_ids: list, note: str = "") -> str:
     lines = [f"👥 <b>Пользователи</b> (всего {len(by_user) + len(orphan_ids)}):\n"]
     for uid, urows in list(by_user.items())[:_ADMIN_ROWS_LIMIT]:
         plans_s = ", ".join(
-            f"{r.get('plan_id') or '—'} (🔥{r.get('streak', 0)}, {r.get('last_read_date') or 'никогда'})"
+            f"{_plan_title(r)} [{r.get('plan_id') or '—'}] (🔥{r.get('streak', 0)}, {r.get('last_read_date') or 'никогда'})"
             for r in urows
         )
         lines.append(f"• <code>{uid}</code> — {plans_s}")
@@ -2527,6 +2527,7 @@ def bible_reminder_button() -> dict:
 class BibleRegisterBody(BaseModel):
     user_id: int
     plan_id: str
+    title: Optional[str] = None
     notify_hour_msk: int = 8
     notify_minute_msk: int = 0
     notify_on: bool = True
@@ -2570,7 +2571,7 @@ class StateBody(BaseModel):
 @app.post("/plan/register")
 async def bible_register(body: BibleRegisterBody):
     from datetime import date
-    ok, err = await sb_upsert({
+    payload = {
         "user_id": body.user_id,
         "plan_id": body.plan_id,
         "start_date": date.today().isoformat(),
@@ -2579,7 +2580,10 @@ async def bible_register(body: BibleRegisterBody):
         "notify_on": body.notify_on,
         "streak": 0, "max_streak": 0,
         "last_read_date": None, "days_done": [],
-    })
+    }
+    if body.title:
+        payload["title"] = body.title
+    ok, err = await sb_upsert(payload)
     if not ok:
         return {"ok": False, "error": err}
     return {"ok": True}
@@ -2868,7 +2872,21 @@ PLAN_TITLES = {
     "bible_365": "Библия за год",
 }
 
-def _plan_title(plan_id: str) -> str:
+def _plan_title(u) -> str:
+    """u может быть строкой (голый plan_id, для обратной совместимости) или
+    целой строкой из plan_progress (dict с полем title). Настоящее название
+    плана, которое ввёл сам пользователь (или сгенерировал мини-апп для
+    хронологического/своего плана), сохраняется в БД при регистрации и
+    ВСЕГДА в приоритете — иначе для любого не-системного плана и здесь, и
+    в виджете "План" в мини-аппе Радио, оставалось бы обезличенное
+    "Свой план", даже если у пользователя их несколько одновременно и они
+    совсем не похожи друг на друга."""
+    if isinstance(u, dict):
+        if u.get("title"):
+            return u["title"]
+        plan_id = u.get("plan_id", "")
+    else:
+        plan_id = u or ""
     if plan_id in PLAN_TITLES:
         return PLAN_TITLES[plan_id]
     if plan_id and plan_id.startswith("c"):
@@ -2921,7 +2939,7 @@ async def bible_send_reminders():
     for u in users:
         streak = u.get("streak", 0)
         lag = _days_behind(u)
-        title = _plan_title(u.get("plan_id", ""))
+        title = _plan_title(u)
         if lag > 0:
             word = _ru_day_word(lag)
             body = (
