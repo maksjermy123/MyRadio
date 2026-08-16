@@ -466,9 +466,10 @@ function hidePlayer(){
 }
 
 /* ── ПЛАН ЧТЕНИЯ БИБЛИИ ── */
-function openBiblePlan(){
+function openBiblePlan(planId){
   if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-  openPost(BIBLE_BOT_LINK);
+  var url=BIBLE_BOT_LINK+(planId?('?startapp=open_'+encodeURIComponent(planId)):'');
+  openPost(url);
 }
 function loadPlan(){
   planLoaded=true;
@@ -591,17 +592,18 @@ function renderPlanProgress(body,plans){
   // отдельно, ни один не перезаписывает данные другого).
   var rows=plans.map(function(d){
     var s=planSummary(d);
-    return '<div class="plan-row">'
+    var pid=(d.plan_id||'').replace(/'/g,"\\'");
+    return '<div class="plan-row" style="cursor:pointer" onclick="openBiblePlan(\''+pid+'\')">'
       +'<span class="plan-row-emoji">'+s.emoji+'</span>'
       +'<div class="plan-row-info"><b>'+s.title+'</b><span>'+s.headline+' · '+s.daysDone+' дн. прочитано</span></div>'
+      +'<span class="plan-row-arrow">→</span>'
       +'</div>';
   }).join('');
   body.innerHTML=''
     +'<div class="plan-card">'
     +'<h3>📚 Твои планы чтения</h3>'
     +rows
-    +'<button class="plan-btn" style="margin-top:14px" onclick="openBiblePlan()">Открыть →</button>'
-    +'<div class="plan-note">Откроется бот «План чтения Библии» в Telegram</div>'
+    +'<div class="plan-note" style="margin-top:14px">Нажми на план, чтобы открыть именно его</div>'
     +'</div>';
 }
 
