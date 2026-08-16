@@ -367,6 +367,7 @@ var ART_FB   = 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f3/Ichthu
    же бэкенд (BACKEND выше), поэтому /plan/status можно спрашивать прямо
    отсюда для персонального прогресса без создания нового эндпоинта. */
 var BIBLE_BOT_LINK = 'https://t.me/mybible_reading_bot/plan';
+var BIBLE_BOT_CHAT_LINK = 'https://t.me/mybible_reading_bot';
 
 var STATIONS = [
   {id:'golos3',name:'Голос Мира — Библия',   desc:'Чтение Писания',       ico:'📖',bg:'#e8f0d8',clr:'#3a5a10',url:'https://golosmira.com:9022/Bible'},
@@ -468,25 +469,82 @@ function hidePlayer(){
 /* ── ПЛАН ЧТЕНИЯ БИБЛИИ ── */
 function openBiblePlan(planId){
   if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-  var url=BIBLE_BOT_LINK+(planId?('?startapp=open_'+encodeURIComponent(planId)):'');
+  var startParam=planId?('open_'+encodeURIComponent(planId)):null;
+  /* На iOS переход по обычной https://t.me/... ссылке в чужой мини-апп
+     (диплинк из ОДНОГО мини-аппа в ДРУГОЙ) иногда на долю секунды
+     показывает баннер Safari "Открыть в Telegram?" поверх уже открывшегося
+     мини-аппа — известная особенность обработки Universal Links в WebKit
+     при переходе из вложенного WebView, а не баг конкретно этого кода.
+     tg://resolve — кастомная URL-схема, а не Universal Link, поэтому
+     Safari её не перехватывает вообще: iOS отдаёт её напрямую Telegram.
+     На Android и десктопе эта проблема не воспроизводится (там другие
+     механизмы диплинков), поэтому фикс применяется ТОЛЬКО на iOS — есть
+     открытый баг на схему tg://...&startapp= на десктопном клиенте
+     (не открывает конкретный мини-апп, только чат), так что менять
+     поведение везде было бы риском сломать то, что и так работает. */
+  if(tg&&tg.platform==='ios'){
+    var tgUrl='tg://resolve?domain=mybible_reading_bot&appname=plan'+(startParam?('&startapp='+startParam):'');
+    window.location.href=tgUrl;
+    return;
+  }
+  var url=BIBLE_BOT_LINK+(startParam?('?startapp='+startParam):'');
   openPost(url);
+}
+function openBibleBotChat(){
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+  // Обычная ссылка на ЛИЧКУ с ботом (не Mini App) — здесь iOS-фикс выше не
+  // нужен, это открытие чата уже проверено вживую через openPost().
+  openPost(BIBLE_BOT_CHAT_LINK);
 }
 function loadPlan(){
   planLoaded=true;
   var body=document.getElementById('plan-body');
   if(!userId){
-    // Нет доступа к user.id (например, открыто вне Telegram) — сразу
-    // показываем приглашение без попытки персонального запроса.
     renderPlanInvite(body);
     return;
   }
-  fetch(BACKEND+'/plan/status?user_id='+userId)
+  /* Три разных состояния, не два: "никогда не писал боту" (Bot API не
+     даёт написать такому человеку напоминание — физически некуда,
+     см. README) отдельно от "написал, но ещё не выбрал план". Раньше
+     здесь проверялся только /plan/status, и человек без предварительной
+     регистрации сразу попадал в Mini App выбирать план — а уведомления
+     потом просто никуда не приходили, потому что чата с ботом так и не
+     возникло. */
+  fetch(BACKEND+'/account/status?user_id='+userId)
     .then(function(r){return r.json();})
-    .then(function(d){
-      if(d&&d.registered) renderPlanProgress(body,d.plans||[]);
-      else renderPlanInvite(body);
+    .then(function(a){
+      if(!a||!a.registered){
+        renderNotRegistered(body);
+        return;
+      }
+      return fetch(BACKEND+'/plan/status?user_id='+userId)
+        .then(function(r){return r.json();})
+        .then(function(d){
+          if(d&&d.registered) renderPlanProgress(body,d.plans||[]);
+          else renderRegisteredNoPlans(body);
+        });
     })
     .catch(function(){ renderPlanInvite(body); });
+}
+function renderNotRegistered(body){
+  body.innerHTML=''
+    +'<div class="plan-card">'
+    +'<div class="plan-emoji">📖</div>'
+    +'<h3>Сначала открой бота</h3>'
+    +'<p>Новый пользователь сначала должен открыть личку с ботом «План чтения Библии» и нажать «Старт» — иначе боту физически некуда будет присылать напоминания.</p>'
+    +'<button class="plan-btn" onclick="openBibleBotChat()">Открыть бота →</button>'
+    +'<div class="plan-note">В личке нажми «Старт», затем вернись сюда через приветственное сообщение бота.</div>'
+    +'</div>';
+}
+function renderRegisteredNoPlans(body){
+  body.innerHTML=''
+    +'<div class="plan-card">'
+    +'<div class="plan-emoji">📖</div>'
+    +'<h3>Аккаунт готов</h3>'
+    +'<p>Выбери первый план чтения — прогресс и напоминания будут привязаны к твоему аккаунту.</p>'
+    +'<button class="plan-btn" onclick="openBiblePlan()">Выбрать план →</button>'
+    +'<div class="plan-note">Откроется Mini App «План чтения Библии».</div>'
+    +'</div>';
 }
 function renderPlanInvite(body){
   body.innerHTML=''
