@@ -14,7 +14,7 @@ import math
 import logging
 import random
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote, parse_qsl, quote
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -2524,6 +2524,32 @@ def bible_reminder_button() -> dict:
 
 # ── Models ────────────────────────────────────────────────────
 
+def _require_bible_user(user_id: int, init_data: Optional[str]) -> None:
+    """Проверяет, что запрос на /plan/*, /state, /account/status
+    действительно пришёл от того самого Telegram-пользователя user_id, а не
+    просто СОДЕРЖИТ его id в теле запроса. Раньше все эти эндпоинты
+    полностью доверяли user_id из тела — Telegram ID не секрет (виден в
+    пересланных сообщениях, ссылках, скриншотах), так что кто угодно мог
+    подставить чужой id и менять/удалять чужой прогресс чтения. Механизм
+    проверки подписи (verify_telegram_init_data, HMAC по WebAppData) уже
+    используется для /verify — здесь тот же самый механизм, просто
+    подключённый к остальным личным эндпоинтам.
+
+    Если BOT_TOKEN не настроен в окружении — не роняем все планы чтения
+    из-за конфигурационной ошибки, а логируем и пропускаем (это тот же
+    компромисс, что и раньше был неявным по умолчанию)."""
+    if not BOT_TOKEN:
+        log.error(f"_require_bible_user: BOT_TOKEN не настроен — user_id={user_id} пропущен БЕЗ проверки подписи")
+        return
+    if not init_data:
+        raise HTTPException(401, "missing init data")
+    payload = verify_telegram_init_data(init_data, BOT_TOKEN, max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
+    if payload is None:
+        raise HTTPException(401, "invalid init data")
+    real_user_id = (payload.get("user") or {}).get("id")
+    if not real_user_id or int(real_user_id) != int(user_id):
+        raise HTTPException(403, "user_id does not match init data")
+
 class BibleRegisterBody(BaseModel):
     user_id: int
     plan_id: str
@@ -2531,12 +2557,14 @@ class BibleRegisterBody(BaseModel):
     notify_hour_msk: int = 8
     notify_minute_msk: int = 0
     notify_on: bool = True
+    init_data: Optional[str] = None
 
 class BibleReadBody(BaseModel):
     user_id: int
     plan_id: str
     day_number: int
     local_date: Optional[str] = None  # YYYY-MM-DD по локальному времени пользователя
+    init_data: Optional[str] = None
 
 class BibleSettingsBody(BaseModel):
     user_id: int
@@ -2544,24 +2572,29 @@ class BibleSettingsBody(BaseModel):
     notify_hour_msk: int
     notify_minute_msk: int = 0
     notify_on: bool
+    init_data: Optional[str] = None
 
 class BibleMergeDaysBody(BaseModel):
     user_id: int
     plan_id: str
     days_done: list
+    init_data: Optional[str] = None
 
 class BibleSetDaysBody(BaseModel):
     user_id: int
     plan_id: str
     days_done: list
+    init_data: Optional[str] = None
 
 class BibleUnregisterBody(BaseModel):
     user_id: int
     plan_id: str
+    init_data: Optional[str] = None
 
 class StateBody(BaseModel):
     user_id: int
     data: dict
+    init_data: Optional[str] = None
 
 # ── Endpoints: планы чтения ────────────────────────────────────
 # Все ниже — теперь на уровне (user_id, plan_id): пользователь может вести
@@ -2570,6 +2603,7 @@ class StateBody(BaseModel):
 
 @app.post("/plan/register")
 async def bible_register(body: BibleRegisterBody):
+    _require_bible_user(body.user_id, body.init_data)
     from datetime import date
     payload = {
         "user_id": body.user_id,
@@ -2589,7 +2623,8 @@ async def bible_register(body: BibleRegisterBody):
     return {"ok": True}
 
 @app.get("/plan/status")
-async def bible_status(user_id: int, plan_id: Optional[str] = None):
+async def bible_status(user_id: int, plan_id: Optional[str] = None, init_data: Optional[str] = None):
+    _require_bible_user(user_id, init_data)
     """С plan_id — прогресс конкретного плана (плоский объект, как раньше,
     для обратной совместимости с местами, которые уже знают, какой план их
     интересует). Без plan_id — сводка ПО ВСЕМ планам пользователя, нужна
@@ -2605,6 +2640,7 @@ async def bible_status(user_id: int, plan_id: Optional[str] = None):
 
 @app.post("/plan/read")
 async def bible_read(body: BibleReadBody):
+    _require_bible_user(body.user_id, body.init_data)
     from datetime import date, timedelta
     row = await sb_get_one(body.user_id, body.plan_id)
     if not row:
@@ -2672,6 +2708,7 @@ async def _delete_progress_row(user_id: int, plan_id: str) -> tuple:
 
 @app.post("/plan/unregister")
 async def bible_unregister(body: BibleUnregisterBody):
+    _require_bible_user(body.user_id, body.init_data)
     """Полностью удаляет строку прогресса КОНКРЕТНОГО плана из plan_progress
     (остальные планы пользователя, если есть, не затрагиваются). Нужен,
     потому что удаление плана в самом мини-аппе (delPlan()) раньше чистило
@@ -2692,6 +2729,7 @@ async def bible_unregister(body: BibleUnregisterBody):
 
 @app.post("/plan/merge_days")
 async def bible_merge_days(body: BibleMergeDaysBody):
+    _require_bible_user(body.user_id, body.init_data)
     """Объединяет присланный клиентом список прочитанных дней с тем, что
     уже есть на сервере — и только это. Нужен, потому что days_done
     хранится в ДВУХ независимых местах (canonical plan_progress, которым
@@ -2712,6 +2750,7 @@ async def bible_merge_days(body: BibleMergeDaysBody):
 
 @app.post("/plan/set_days")
 async def bible_set_days(body: BibleSetDaysBody):
+    _require_bible_user(body.user_id, body.init_data)
     """В отличие от /plan/merge_days — не объединяет, а ПЕРЕЗАПИСЫВАЕТ
     список прочитанных дней ровно тем, что прислали. Нужен для редактирования
     своего плана ("Составить свой план"): если пользователь уменьшает
@@ -2726,6 +2765,7 @@ async def bible_set_days(body: BibleSetDaysBody):
 
 @app.post("/plan/settings")
 async def bible_settings(body: BibleSettingsBody):
+    _require_bible_user(body.user_id, body.init_data)
     await sb_patch(body.user_id, body.plan_id, {
         "notify_hour_msk": body.notify_hour_msk,
         "notify_minute_msk": body.notify_minute_msk,
@@ -2736,7 +2776,8 @@ async def bible_settings(body: BibleSettingsBody):
 # ── Endpoints: единый аккаунт (полное состояние приложения) ──
 
 @app.get("/account/status")
-async def account_status(user_id: int):
+async def account_status(user_id: int, init_data: Optional[str] = None):
+    _require_bible_user(user_id, init_data)
     """Клиент дергает это ПЕРЕД синхронизацией app_state (см. checkAccountReset
     в index.html). Если сохранённый локально reset_token отличается от
     того, что вернул этот эндпоинт — значит аккаунт сбрасывали через /users
@@ -2745,7 +2786,8 @@ async def account_status(user_id: int):
     return {"reset_token": row.get("reset_token")}
 
 @app.get("/state")
-async def get_state(user_id: int):
+async def get_state(user_id: int, init_data: Optional[str] = None):
+    _require_bible_user(user_id, init_data)
     row = await sb_state_get(user_id)
     if not row:
         return {"exists": False}
@@ -2753,6 +2795,7 @@ async def get_state(user_id: int):
 
 @app.post("/state")
 async def save_state(body: StateBody):
+    _require_bible_user(body.user_id, body.init_data)
     await sb_state_upsert(body.user_id, body.data)
     return {"ok": True}
 
@@ -2930,13 +2973,46 @@ def _days_behind(u: dict) -> int:
     return max(0, calendar_day - landing)
 
 
+async def _claim_reminder_slot(user_id: int, plan_id: str, now_iso: str, cutoff_iso: str) -> bool:
+    """Атомарно 'застолбить' право отправить именно ЭТОМУ пользователю
+    напоминание именно в эту минуту — проверка на уровне БД, а не только в
+    памяти процесса. max_instances=1 у APScheduler уже не даёт ОДНОМУ и тому
+    же процессу запустить пересекающийся забег, но если Render-сервис
+    когда-нибудь запустят с несколькими воркерами (--workers N в Procfile),
+    у каждого будет свой независимый планировщик — без проверки на уровне
+    БД все они одновременно отправили бы одно и то же напоминание.
+    Возвращает True, если именно этот вызов успел "застолбить" слот (можно
+    слать), False — если кто-то другой уже сделал это в течение последней
+    минуты (пропускаем, не дублируем)."""
+    async with httpx.AsyncClient() as client:
+        r = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            headers={**SB_HEADERS, "Prefer": "return=representation"},
+            params={
+                "user_id": f"eq.{user_id}",
+                "plan_id": f"eq.{plan_id}",
+                "or": f"(last_reminder_sent_at.is.null,last_reminder_sent_at.lt.{cutoff_iso})",
+            },
+            json={"last_reminder_sent_at": now_iso},
+        )
+    try:
+        rows = r.json() if r.status_code == 200 else []
+    except Exception:
+        rows = []
+    return bool(rows)
+
 @bible_scheduler.scheduled_job("cron", minute="*")
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return
     now_msk = datetime.now(MSK)
+    now_iso = now_msk.isoformat()
+    cutoff_iso = (now_msk - timedelta(seconds=55)).isoformat()
     users = await sb_get_due(now_msk.hour, now_msk.minute)
     for u in users:
+        claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
+        if not claimed:
+            continue
         streak = u.get("streak", 0)
         lag = _days_behind(u)
         title = _plan_title(u)
