@@ -2538,12 +2538,12 @@ def _require_bible_user(user_id: int, init_data: Optional[str]) -> None:
     Если BOT_TOKEN не настроен в окружении — не роняем все планы чтения
     из-за конфигурационной ошибки, а логируем и пропускаем (это тот же
     компромисс, что и раньше был неявным по умолчанию)."""
-    if not BOT_TOKEN:
-        log.error(f"_require_bible_user: BOT_TOKEN не настроен — user_id={user_id} пропущен БЕЗ проверки подписи")
+    if not BIBLE_BOT_TOKEN:
+        log.error(f"_require_bible_user: BIBLE_BOT_TOKEN не настроен — user_id={user_id} пропущен БЕЗ проверки подписи")
         return
     if not init_data:
         raise HTTPException(401, "missing init data")
-    payload = verify_telegram_init_data(init_data, BOT_TOKEN, max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
+    payload = verify_telegram_init_data(init_data, BIBLE_BOT_TOKEN, max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
     if payload is None:
         raise HTTPException(401, "invalid init data")
     real_user_id = (payload.get("user") or {}).get("id")
