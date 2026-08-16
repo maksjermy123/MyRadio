@@ -2634,13 +2634,22 @@ async def bible_register(body: BibleRegisterBody):
     return {"ok": True}
 
 @app.get("/plan/status")
-async def bible_status(user_id: int, plan_id: Optional[str] = None, init_data: Optional[str] = None):
-    _require_bible_user(user_id, init_data)
+async def bible_status(user_id: int, plan_id: Optional[str] = None):
     """С plan_id — прогресс конкретного плана (плоский объект, как раньше,
     для обратной совместимости с местами, которые уже знают, какой план их
     интересует). Без plan_id — сводка ПО ВСЕМ планам пользователя, нужна
     виджету "План" в мини-аппе Оглавления, который не привязан к одному
-    конкретному плану."""
+    конкретному плану.
+
+    НЕ проверяем initData здесь — единственный эндпоинт-исключение из
+    _require_bible_user. Причина архитектурная, не недосмотр: этот
+    эндпоинт легитимно дёргается ИЗ ДРУГОГО мини-аппа (виджет "План" в
+    Radio, открытого через @preoradio_bot), у которого initData подписан
+    ДРУГИМ ботом — проверка через BIBLE_BOT_TOKEN там всегда провалится,
+    что мы уже словили на практике. Раз эндпоинт read-only (отдаёт только
+    стрик/отставание, ничего не меняет), риск ниже, чем у мутирующих
+    эндпоинтов — максимум, что можно узнать без подписи, это чужой прогресс
+    чтения, а не изменить его."""
     if plan_id:
         row = await sb_get_one(user_id, plan_id)
         if not row:
