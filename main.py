@@ -2454,14 +2454,24 @@ async def bible_edit_message(chat_id: int, message_id: int, text: str, reply_mar
     async with httpx.AsyncClient() as client:
         await client.post(f"{BIBLE_API}/editMessageText", json=payload)
 
-def _bible_url() -> str:
+def _bible_url(plan_id: Optional[str] = None) -> str:
     """Добавляем метку времени к ссылке — иначе Telegram кэширует старую версию
     Mini App и не подгружает свежий index.html после обновлений (подтверждено
     на реальных устройствах: 10.07.2026 разные платформы показывали разные,
     несинхронизированные данные из-за того, что нативные приложения держали
-    закэшированную старую версию index.html)."""
-    import time
-    return f"{BIBLE_PAGES_URL}?v={int(time.time())}"
+    закэшированную старую версию index.html).
+
+    plan_id (опционально) добавляется как query-параметр — иначе кнопка
+    "Открыть план" в напоминании ВСЕГДА открывала мини-апп в его последнем
+    локальном состоянии (app.activePlanId из localStorage), поэтому у двух
+    напоминаний про разные планы кнопки вели в одно и то же место — в тот
+    план, что открывали последним, а не в тот, о котором конкретно это
+    напоминание."""
+    import time, urllib.parse
+    url = f"{BIBLE_PAGES_URL}?v={int(time.time())}"
+    if plan_id:
+        url += f"&plan={urllib.parse.quote(plan_id)}"
+    return url
 
 CHANNEL_BTN_TEXT = f"📻 {CHANNEL_NAME}"
 SHARE_BTN_TEXT = "📤 Поделиться с другом"
@@ -2513,11 +2523,11 @@ def bible_start_keyboard() -> dict:
         "is_persistent": True,
     }
 
-def bible_reminder_button() -> dict:
+def bible_reminder_button(plan_id: str) -> dict:
     """Инлайн-кнопки только для сообщений-напоминаний (не влияют на постоянную клавиатуру).
     Расписание и логика напоминаний не менялись — только cache-busting ссылка ниже."""
     return {"inline_keyboard": [[
-        {"text": "📖 Открыть план", "web_app": {"url": _bible_url()}},
+        {"text": "📖 Открыть план", "web_app": {"url": _bible_url(plan_id)}},
     ], [
         {"text": f"📻 Канал: {CHANNEL_NAME}", "url": CHANNEL_LINK},
     ]]}
@@ -3040,5 +3050,5 @@ async def bible_send_reminders():
         await bible_send(
             u["user_id"],
             body,
-            bible_reminder_button(),
+            bible_reminder_button(u["plan_id"]),
         )
