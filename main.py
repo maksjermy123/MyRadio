@@ -2389,15 +2389,18 @@ async def sb_account_ensure(user_id: int) -> dict:
 async def sb_account_rotate_reset(user_id: int) -> None:
     """Вызывается ТОЛЬКО из админ-панели /users при полном удалении
     пользователя (_wipe_user_completely). Строка bible_accounts НЕ
-    удаляется — только получает новый случайный reset_token. Именно смена
-    токена (а не сам факт исчезновения app_state) — то, что клиент сверяет
-    в checkAccountReset() перед тем, как синхронизировать состояние."""
+    удаляется — только получает новый случайный reset_token И started_at
+    сбрасывается в NULL (пользователь снова считается незарегистрированным,
+    как будто никогда не жал /start — придётся сделать это заново). Именно
+    смена токена (а не сам факт исчезновения app_state) — то, что клиент
+    сверяет в checkAccountReset() перед тем, как синхронизировать
+    состояние."""
     import uuid
     async with httpx.AsyncClient() as client:
         await client.post(
             f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
             headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json={"user_id": user_id, "reset_token": str(uuid.uuid4())},
+            json={"user_id": user_id, "reset_token": str(uuid.uuid4()), "started_at": None},
         )
 
 async def _remove_plan_from_app_state(user_id: int, plan_id: str) -> None:
@@ -2807,13 +2810,26 @@ async def bible_settings(body: BibleSettingsBody):
 
 @app.get("/account/status")
 async def account_status(user_id: int, init_data: Optional[str] = None):
-    _require_bible_user(user_id, init_data)
     """Клиент дергает это ПЕРЕД синхронизацией app_state (см. checkAccountReset
-    в index.html). Если сохранённый локально reset_token отличается от
-    того, что вернул этот эндпоинт — значит аккаунт сбрасывали через /users
-    с прошлого раза, и localStorage нужно стереть до пуша на сервер."""
+    в index.html) — а виджет "План" в Оглавлении/Radio дёргает это же для
+    экрана-гейта "сначала зарегистрируйся в боте". Именно поэтому, как и у
+    /plan/status, НЕ проверяем initData здесь: виджет в другом мини-аппе
+    физически не может прислать подпись, валидную для BIBLE_BOT_TOKEN — у
+    него initData собственного бота (@preoradio_bot). Эндпоинт читает
+    только флаги (reset_token, registered), ничего не мутирует, так что
+    риск ниже, чем у мутирующих /plan/*.
+
+    Если сохранённый локально reset_token отличается от того, что вернул
+    этот эндпоинт — значит аккаунт сбрасывали через /users с прошлого раза,
+    и localStorage нужно стереть до пуша на сервер.
+
+    registered=True только если пользователь ДЕЙСТВИТЕЛЬНО открывал чат с
+    ботом (started_at заполнен — см. sb_account_mark_started). Просто заход
+    в Mini App по прямой ссылке (в т.ч. из виджета "План" в другом
+    мини-аппе) сам по себе чат не создаёт — и тогда боту физически некуда
+    будет присылать напоминания."""
     row = await sb_account_ensure(user_id)
-    return {"reset_token": row.get("reset_token")}
+    return {"reset_token": row.get("reset_token"), "registered": bool(row.get("started_at"))}
 
 @app.get("/state")
 async def get_state(user_id: int, init_data: Optional[str] = None):
@@ -2832,6 +2848,36 @@ async def save_state(body: StateBody):
 # ── Webhook ───────────────────────────────────────────────────
 
 @app.post("/webhook/bible")
+async def sb_account_mark_started(user_id: int) -> None:
+    """Отмечает, что пользователь ДЕЙСТВИТЕЛЬНО открыл чат с ботом (а не
+    просто зашёл в Mini App по прямой ссылке). Bot API не позволяет боту
+    написать первым тому, кто с ним никогда не переписывался — открытие
+    Mini App по t.me/bot/short?startapp= само по себе чат не создаёт.
+    На Android Telegram, судя по всему, неявно шлёт скрытый /start при
+    первом заходе в такую ссылку — на iOS это не срабатывает надёжно
+    (совпадает с уже известным багом баннера Safari), из-за чего
+    напоминаниям было физически некуда приходить. sb_upsert с
+    merge-duplicates не трогает уже выставленный started_at повторными
+    вызовами (это ЛЮБОЕ сообщение в чат, не только /start)."""
+    async with httpx.AsyncClient() as client:
+        existing = await client.get(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts",
+            headers=SB_HEADERS,
+            params={"user_id": f"eq.{user_id}", "select": "started_at", "limit": "1"},
+        )
+    try:
+        rows = existing.json()
+    except Exception:
+        rows = []
+    if rows and rows[0].get("started_at"):
+        return
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json={"user_id": user_id, "started_at": datetime.now(timezone.utc).isoformat()},
+        )
+
 async def bible_webhook(request: Request):
     try:
         data = await request.json()
@@ -2907,6 +2953,7 @@ async def bible_webhook(request: Request):
     #      план чтения», чтобы низ экрана не был перманентно занят.
     await bible_send(chat_id, BIBLE_WELCOME_TEXT, bible_welcome_buttons())
     await bible_send(chat_id, "🙏", bible_start_keyboard())
+    await sb_account_mark_started(chat_id)
     return {"ok": True}
 
 @app.get("/bible/status")
