@@ -2848,7 +2848,7 @@ async def save_state(body: StateBody):
 # ── Webhook ───────────────────────────────────────────────────
 
 @app.post("/webhook/bible")
-async def sb_account_mark_started(user_id: int) -> None:
+async def bible_webhook(request: Request):
     """Отмечает, что пользователь ДЕЙСТВИТЕЛЬНО открыл чат с ботом (а не
     просто зашёл в Mini App по прямой ссылке). Bot API не позволяет боту
     написать первым тому, кто с ним никогда не переписывался — открытие
