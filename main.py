@@ -2578,6 +2578,7 @@ class BibleMergeDaysBody(BaseModel):
     user_id: int
     plan_id: str
     days_done: list
+    title: Optional[str] = None
     init_data: Optional[str] = None
 
 class BibleSetDaysBody(BaseModel):
@@ -2744,8 +2745,18 @@ async def bible_merge_days(body: BibleMergeDaysBody):
     if not row:
         return {"ok": False, "error": "not registered"}
     merged = sorted(set((row.get("days_done") or [])) | set(body.days_done or []))
+    patch = {}
     if merged != sorted(row.get("days_done") or []):
-        await sb_patch(body.user_id, body.plan_id, {"days_done": merged})
+        patch["days_done"] = merged
+    # Самовосстановление title: этот эндпоинт вызывается при КАЖДОМ открытии
+    # мини-аппа для каждого плана пользователя — надёжная точка, чтобы
+    # дозаполнить title у планов, зарегистрированных ещё до того, как сервер
+    # научился его сохранять (раньше title обновлялся только при /plan/register,
+    # то есть один раз при создании плана, и никогда — при обычном чтении).
+    if body.title and body.title != row.get("title"):
+        patch["title"] = body.title
+    if patch:
+        await sb_patch(body.user_id, body.plan_id, patch)
     return {"ok": True, "days_done": merged}
 
 @app.post("/plan/set_days")
