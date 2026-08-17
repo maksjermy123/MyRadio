@@ -1,4 +1,5 @@
 import os
+import html as _html
 import hmac
 import hashlib
 import json
@@ -20,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import httpx
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -44,6 +45,7 @@ app.add_middleware(
 
 # ── Конфигурация ──────────────────────────────────────────────
 BOT_TOKEN                 = os.environ.get("BOT_TOKEN", "")
+WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
 CHANNEL_ID                = os.environ.get("CHANNEL_ID", "@Chtenie_Preobrazenie")
 DISCUSSION_CHAT_ID        = -1002557846325  # linked чат для комментариев
 INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
@@ -1272,8 +1274,31 @@ async def verify(request: VerifyRequest):
     return {"allowed": status in {"member", "administrator", "creator"}, "status": status}
 
 
+def _verify_webhook_secret(request: Request) -> bool:
+    """Единственное, что реально подтверждает, что POST на /webhook или
+    /webhook/bible пришёл от Telegram, а не от кого угодно, кто узнал URL.
+    Без этой проверки sender_id/from.id из тела запроса — просто число,
+    которое отправитель мог вписать любое, включая ID администратора, и
+    получить доступ к /users, /stats, удалению любого пользователя и т.д.
+    Telegram эхом присылает этот заголовок на каждый вебхук-запрос ТОЛЬКО
+    если он был зарегистрирован через setWebhook с параметром secret_token
+    (см. set_webhook/set_webhook_bible ниже) — значение известно только
+    нам и Telegram, подделать его снаружи невозможно.
+
+    Если WEBHOOK_SECRET не задан в окружении — не блокируем (иначе бот
+    молча перестанет отвечать на любые сообщения при забытой переменной),
+    но громко логируем: без секрета админ-панель фактически открыта
+    снаружи."""
+    if not WEBHOOK_SECRET:
+        log.error("_verify_webhook_secret: WEBHOOK_SECRET не настроен — вебхук принимает ЛЮБЫЕ запросы без проверки подлинности!")
+        return True
+    header = request.headers.get("x-telegram-bot-api-secret-token", "")
+    return hmac.compare_digest(header, WEBHOOK_SECRET)
+
 @app.post("/webhook")
 async def webhook(request: Request):
+    if not _verify_webhook_secret(request):
+        return JSONResponse(status_code=401, content={"ok": False, "error": "invalid secret token"})
     try:
         update = await request.json()
     except Exception:
@@ -1825,13 +1850,18 @@ async def set_webhook(request: Request):
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN not set"}
     webhook_url = str(request.base_url).rstrip("/") + "/webhook"
+    payload = {
+        "url": webhook_url,
+        "allowed_updates": ["channel_post", "edited_channel_post", "message"],
+    }
+    if WEBHOOK_SECRET:
+        payload["secret_token"] = WEBHOOK_SECRET
+    else:
+        log.error("set_webhook: WEBHOOK_SECRET не задан — регистрирую вебхук БЕЗ secret_token")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={
-                "url": webhook_url,
-                "allowed_updates": ["channel_post", "edited_channel_post", "message"],
-            })
+            json=payload)
         data = resp.json()
     log.info(f"setWebhook → {data}")
     return {"ok": data.get("ok"), "webhook_url": webhook_url, "telegram_response": data}
@@ -1856,13 +1886,18 @@ async def set_webhook_bible(request: Request):
     if not BIBLE_BOT_TOKEN:
         return {"ok": False, "error": "BIBLE_BOT_TOKEN not set"}
     webhook_url = str(request.base_url).rstrip("/") + "/webhook/bible"
+    payload = {
+        "url": webhook_url,
+        "allowed_updates": ["message", "callback_query"],
+    }
+    if WEBHOOK_SECRET:
+        payload["secret_token"] = WEBHOOK_SECRET
+    else:
+        log.error("set_webhook_bible: WEBHOOK_SECRET не задан — регистрирую вебхук БЕЗ secret_token")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}/setWebhook",
-            json={
-                "url": webhook_url,
-                "allowed_updates": ["message", "callback_query"],
-            })
+            json=payload)
         data = resp.json()
     log.info(f"setWebhook (bible) → {data}")
     return {"ok": data.get("ok"), "webhook_url": webhook_url, "telegram_response": data}
@@ -2573,44 +2608,44 @@ def _require_bible_user(user_id: int, init_data: Optional[str]) -> None:
 
 class BibleRegisterBody(BaseModel):
     user_id: int
-    plan_id: str
-    title: Optional[str] = None
-    notify_hour_msk: int = 8
-    notify_minute_msk: int = 0
+    plan_id: str = Field(max_length=64)
+    title: Optional[str] = Field(default=None, max_length=120)
+    notify_hour_msk: int = Field(default=8, ge=0, le=23)
+    notify_minute_msk: int = Field(default=0, ge=0, le=59)
     notify_on: bool = True
     init_data: Optional[str] = None
 
 class BibleReadBody(BaseModel):
     user_id: int
-    plan_id: str
+    plan_id: str = Field(max_length=64)
     day_number: int
     local_date: Optional[str] = None  # YYYY-MM-DD по локальному времени пользователя
     init_data: Optional[str] = None
 
 class BibleSettingsBody(BaseModel):
     user_id: int
-    plan_id: str
-    notify_hour_msk: int
-    notify_minute_msk: int = 0
+    plan_id: str = Field(max_length=64)
+    notify_hour_msk: int = Field(ge=0, le=23)
+    notify_minute_msk: int = Field(default=0, ge=0, le=59)
     notify_on: bool
     init_data: Optional[str] = None
 
 class BibleMergeDaysBody(BaseModel):
     user_id: int
-    plan_id: str
+    plan_id: str = Field(max_length=64)
     days_done: list
-    title: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=120)
     init_data: Optional[str] = None
 
 class BibleSetDaysBody(BaseModel):
     user_id: int
-    plan_id: str
+    plan_id: str = Field(max_length=64)
     days_done: list
     init_data: Optional[str] = None
 
 class BibleUnregisterBody(BaseModel):
     user_id: int
-    plan_id: str
+    plan_id: str = Field(max_length=64)
     init_data: Optional[str] = None
 
 class StateBody(BaseModel):
@@ -2887,6 +2922,8 @@ async def sb_account_mark_started(user_id: int) -> None:
 
 @app.post("/webhook/bible")
 async def bible_webhook(request: Request):
+    if not _verify_webhook_secret(request):
+        return JSONResponse(status_code=401, content={"ok": False, "error": "invalid secret token"})
     try:
         data = await request.json()
     except Exception:
@@ -3011,7 +3048,12 @@ def _plan_title(u) -> str:
     совсем не похожи друг на друга."""
     if isinstance(u, dict):
         if u.get("title"):
-            return u["title"]
+            # title — свободный текст от клиента (/plan/register), а не
+            # системная константа. Без экранирования сюда можно вписать
+            # HTML-теги, которые отрисуются как настоящая разметка/ссылка и
+            # в напоминании самому пользователю, и, что важнее, в панели
+            # /users, которую видит администратор (parse_mode=HTML везде).
+            return _html.escape(u["title"])
         plan_id = u.get("plan_id", "")
     else:
         plan_id = u or ""
