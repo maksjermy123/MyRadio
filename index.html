@@ -469,24 +469,15 @@ function hidePlayer(){
 /* ── ПЛАН ЧТЕНИЯ БИБЛИИ ── */
 function openBiblePlan(planId){
   if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+  /* Пробовали tg://resolve?...&startapp= на iOS, чтобы обойти баннер
+     Safari при переходе между мини-аппами — не сработало вообще: похоже,
+     WebView мини-аппа в Telegram на iOS блокирует переход по кастомной
+     URL-схеме изнутри себя (по соображениям безопасности, вероятно). Тап
+     давал вибро-отклик, но перехода не происходило совсем — хуже, чем
+     исходный баннер, который хотя бы вёл в нужное место. Вернулись к
+     обычной https://t.me/ ссылке на всех платформах одинаково; баннер на
+     iOS — известное неудобство, но рабочее, а не тупик. */
   var startParam=planId?('open_'+encodeURIComponent(planId)):null;
-  /* На iOS переход по обычной https://t.me/... ссылке в чужой мини-апп
-     (диплинк из ОДНОГО мини-аппа в ДРУГОЙ) иногда на долю секунды
-     показывает баннер Safari "Открыть в Telegram?" поверх уже открывшегося
-     мини-аппа — известная особенность обработки Universal Links в WebKit
-     при переходе из вложенного WebView, а не баг конкретно этого кода.
-     tg://resolve — кастомная URL-схема, а не Universal Link, поэтому
-     Safari её не перехватывает вообще: iOS отдаёт её напрямую Telegram.
-     На Android и десктопе эта проблема не воспроизводится (там другие
-     механизмы диплинков), поэтому фикс применяется ТОЛЬКО на iOS — есть
-     открытый баг на схему tg://...&startapp= на десктопном клиенте
-     (не открывает конкретный мини-апп, только чат), так что менять
-     поведение везде было бы риском сломать то, что и так работает. */
-  if(tg&&tg.platform==='ios'){
-    var tgUrl='tg://resolve?domain=mybible_reading_bot&appname=plan'+(startParam?('&startapp='+startParam):'');
-    window.location.href=tgUrl;
-    return;
-  }
   var url=BIBLE_BOT_LINK+(startParam?('?startapp='+startParam):'');
   openPost(url);
 }
