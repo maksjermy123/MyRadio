@@ -2535,12 +2535,16 @@ async def _remove_plan_from_app_state(user_id: int, plan_id: str) -> None:
 
 # ── Telegram ──────────────────────────────────────────────────
 
-async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
+async def bible_send(chat_id: int, text: str, reply_markup: dict = None) -> dict:
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
     client = HTTP_CLIENT
-    await client.post(f"{BIBLE_API}/sendMessage", json=payload)
+    r = await client.post(f"{BIBLE_API}/sendMessage", json=payload)
+    try:
+        return r.json()
+    except Exception:
+        return {}
 
 async def bible_answer_callback(callback_query_id: str, text: str = None):
     """Гасит "часики" на нажатой инлайн-кнопке. text (если задан) показывается
@@ -3210,6 +3214,23 @@ async def _claim_reminder_slot(user_id: int, plan_id: str, now_iso: str, cutoff_
     return bool(rows)
 
 @bible_scheduler.scheduled_job("cron", minute="*")
+async def _disable_reminders_for_blocked_user(user_id: int) -> None:
+    """Telegram ответил 403 (бот заблокирован или пользователь удалил
+    аккаунт) — дальше пытаться слать этому user_id ежедневные напоминания
+    бессмысленно и просто впустую тратит вызовы API, а сам пользователь
+    годами висел бы в /users как "активный", хотя давно недоступен.
+    Отключаем notify_on для ВСЕХ его планов разом — прогресс и стрик не
+    трогаем, только останавливаем попытки писать. Если человек когда-нибудь
+    разблокирует бота, он сможет включить напоминания заново как обычно."""
+    client = HTTP_CLIENT
+    await client.patch(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}"},
+        json={"notify_on": False},
+    )
+    log.info(f"bible: user_id={user_id} — 403 от Telegram (бот заблокирован), напоминания отключены для всех его планов")
+
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return
@@ -3217,6 +3238,7 @@ async def bible_send_reminders():
     now_iso = now_msk.isoformat()
     cutoff_iso = (now_msk - timedelta(seconds=55)).isoformat()
     users = await sb_get_due(now_msk.hour, now_msk.minute)
+    blocked_this_run = set()  # не бить по Supabase повторно, если у юзера несколько планов на одну минуту
     for u in users:
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
@@ -3234,8 +3256,11 @@ async def bible_send_reminders():
         else:
             streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
             body = f"📅 «{title}»: время читать Библию\n{streak_text}"
-        await bible_send(
+        result = await bible_send(
             u["user_id"],
             body,
             bible_reminder_button(u["plan_id"]),
         )
+        if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
+            blocked_this_run.add(u["user_id"])
+            await _disable_reminders_for_blocked_user(u["user_id"])
