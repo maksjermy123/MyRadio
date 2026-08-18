@@ -22,6 +22,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Optional
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import httpx
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -30,6 +33,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("radio")
 
 app = FastAPI()
+
+# Ограничение частоты запросов — намеренно НЕ глобальное (не хотим случайно
+# зацепить радио/контентные эндпоинты, у которых своя, непроверенная в этой
+# сессии специфика нагрузки). Применяется точечно только к мутирующим
+# эндпоинтам плана чтения (/plan/register, /plan/read и т.д. — см. ниже) —
+# защита от одного "шумного" клиента (баг в его коде или намеренная
+# нагрузка), а не от обычного использования: лимиты подобраны с большим
+# запасом относительно того, сколько запросов реально делает один живой
+# пользователь.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = [
     o.strip()
@@ -2030,9 +2045,28 @@ MSK = ZoneInfo("Europe/Moscow")
 
 bible_scheduler = AsyncIOScheduler(timezone=MSK)
 
+# Общий httpx-клиент для всех Supabase-запросов кода плана чтения. Раньше
+# каждый вызов создавал httpx.AsyncClient() заново — новое TCP/TLS-
+# соединение на КАЖДЫЙ запрос к Supabase, вместо переиспользования уже
+# открытого keep-alive соединения. При росте числа пользователей (и,
+# соответственно, числа обращений к Supabase) это заметно бьёт по задержке.
+# Намеренно НЕ трогаем остальные httpx.AsyncClient(timeout=...) в проекте
+# (радио/анализ постов) — они написаны раньше, с осознанно подобранными
+# таймаутами под конкретные внешние вызовы (GitHub, Telegram), и не были
+# частью этой сессии — рефакторить их заодно было бы risky без отдельной
+# проверки.
+HTTP_CLIENT: httpx.AsyncClient = None
+
 @app.on_event("startup")
 async def bible_scheduler_startup():
+    global HTTP_CLIENT
+    HTTP_CLIENT = httpx.AsyncClient(timeout=15.0)
     bible_scheduler.start()
+
+@app.on_event("shutdown")
+async def bible_http_client_shutdown():
+    if HTTP_CLIENT:
+        await HTTP_CLIENT.aclose()
 
 # ── Supabase: plan_progress ────────────────────────────────────
 
@@ -2053,25 +2087,25 @@ async def bible_scheduler_startup():
 
 async def sb_get_all(user_id: int) -> list:
     """Все строки прогресса пользователя — по одной на каждый его план."""
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}"},
-        )
-        data = r.json()
-        return data if isinstance(data, list) else []
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}"},
+    )
+    data = r.json()
+    return data if isinstance(data, list) else []
 
 async def sb_get_one(user_id: int, plan_id: str):
     """Прогресс по конкретному плану (или None, если пользователь его не регистрировал)."""
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}", "limit": "1"},
-        )
-        data = r.json()
-        return data[0] if isinstance(data, list) and data else None
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}", "limit": "1"},
+    )
+    data = r.json()
+    return data[0] if isinstance(data, list) and data else None
 
 async def sb_upsert(payload: dict) -> tuple:
     """Возвращает (ok, error). Раньше здесь ответ Supabase вообще не
@@ -2082,12 +2116,12 @@ async def sb_upsert(payload: dict) -> tuple:
     {"ok": true}, будто второй план зарегистрировался. На деле строка не
     создавалась, и следующий /plan/read честно, но неожиданно для клиента
     отвечал "not registered" — план как будто испарялся."""
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            f"{SUPABASE_URL}/rest/v1/plan_progress?on_conflict=user_id,plan_id",
-            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json=payload,
-        )
+    client = HTTP_CLIENT
+    r = await client.post(
+        f"{SUPABASE_URL}/rest/v1/plan_progress?on_conflict=user_id,plan_id",
+        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json=payload,
+    )
     if r.status_code >= 300:
         try:
             err = r.json()
@@ -2098,13 +2132,13 @@ async def sb_upsert(payload: dict) -> tuple:
     return True, None
 
 async def sb_patch(user_id: int, plan_id: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        await client.patch(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
-            json=payload,
-        )
+    client = HTTP_CLIENT
+    await client.patch(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
+        json=payload,
+    )
 
 async def sb_get_due(hour: int, minute: int) -> list:
     """Точное совпадение часа И минуты — раньше проверялся только час
@@ -2118,19 +2152,19 @@ async def sb_get_due(hour: int, minute: int) -> list:
     сообщению на каждый план (см. bible_send_reminders)."""
     from datetime import date
     today = date.today().isoformat()
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers=SB_HEADERS,
-            params={
-                "notify_hour_msk": f"eq.{hour}",
-                "notify_minute_msk": f"eq.{minute}",
-                "notify_on": "eq.true",
-                "last_read_date": f"neq.{today}",
-                "select": "user_id,plan_id,title,streak,start_date,days_done",
-            },
-        )
-        return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={
+            "notify_hour_msk": f"eq.{hour}",
+            "notify_minute_msk": f"eq.{minute}",
+            "notify_on": "eq.true",
+            "last_read_date": f"neq.{today}",
+            "select": "user_id,plan_id,title,streak,start_date,days_done",
+        },
+    )
+    return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
 async def _sb_count(client: httpx.AsyncClient, extra_params: dict) -> int:
     """Считает строки в plan_progress через PostgREST Prefer: count=exact —
@@ -2164,11 +2198,11 @@ async def bible_collect_stats() -> dict:
     from datetime import date, timedelta
     today = date.today().isoformat()
     week_ago = (date.today() - timedelta(days=7)).isoformat()
-    async with httpx.AsyncClient() as client:
-        total          = await _sb_count(client, {})
-        active_today   = await _sb_count(client, {"last_read_date": f"eq.{today}"})
-        active_7d      = await _sb_count(client, {"last_read_date": f"gte.{week_ago}"})
-        notify_enabled = await _sb_count(client, {"notify_on": "eq.true"})
+    client = HTTP_CLIENT
+    total          = await _sb_count(client, {})
+    active_today   = await _sb_count(client, {"last_read_date": f"eq.{today}"})
+    active_7d      = await _sb_count(client, {"last_read_date": f"gte.{week_ago}"})
+    notify_enabled = await _sb_count(client, {"notify_on": "eq.true"})
     return {
         "total": total,
         "active_today": active_today,
@@ -2185,17 +2219,17 @@ async def bible_collect_stats() -> dict:
 # план вроде бы удалён в интерфейсе.
 
 async def _fetch_all_progress_rows() -> list:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers=SB_HEADERS,
-            params={
-                "select": "user_id,plan_id,title,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
-                "order": "user_id",
-            },
-        )
-        data = r.json()
-        return data if isinstance(data, list) else []
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={
+            "select": "user_id,plan_id,title,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
+            "order": "user_id",
+        },
+    )
+    data = r.json()
+    return data if isinstance(data, list) else []
 
 async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
     """Пользователи, у которых есть слепок app_state, но НИ ОДНОЙ строки в
@@ -2205,12 +2239,12 @@ async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
     сегодня с реальным призрачным app_state). Это ровно то состояние, которое
     возникает из-за бага «воскрешения» localStorage (см. checkAccountReset на
     клиенте): plan_progress уже пуст, а app_state — ещё нет."""
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/app_state",
-            headers=SB_HEADERS,
-            params={"select": "user_id", "order": "user_id"},
-        )
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/app_state",
+        headers=SB_HEADERS,
+        params={"select": "user_id", "order": "user_id"},
+    )
     try:
         data = r.json()
     except Exception:
@@ -2230,45 +2264,67 @@ async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
 _ADMIN_ROWS_LIMIT = 40
 
 def _admin_users_text(rows: list, orphan_ids: list, note: str = "") -> str:
-    if not rows and not orphan_ids:
-        return (note + "\n\n" if note else "") + "👥 В plan_progress и app_state сейчас нет ни одной записи."
     by_user = {}
     for row in rows:
         by_user.setdefault(row.get("user_id"), []).append(row)
-    lines = [f"👥 <b>Пользователи</b> (всего {len(by_user) + len(orphan_ids)}):\n"]
-    for uid, urows in list(by_user.items())[:_ADMIN_ROWS_LIMIT]:
-        plans_s = ", ".join(
-            f"{_plan_title(r)} [{r.get('plan_id') or '—'}] (🔥{r.get('streak', 0)}, {r.get('last_read_date') or 'никогда'})"
-            for r in urows
-        )
-        lines.append(f"• <code>{uid}</code> — {plans_s}")
-    if len(by_user) > _ADMIN_ROWS_LIMIT:
-        lines.append(f"\n… и ещё {len(by_user) - _ADMIN_ROWS_LIMIT}. Показаны первые {_ADMIN_ROWS_LIMIT}.")
-    if orphan_ids:
-        lines.append("\n🌫 <b>Только app_state, планов нет</b> (осиротевшие записи):")
-        for uid in orphan_ids[:_ADMIN_ROWS_LIMIT]:
-            lines.append(f"• <code>{uid}</code> — есть слепок мини-аппа, ни одного плана в plan_progress")
-        if len(orphan_ids) > _ADMIN_ROWS_LIMIT:
-            lines.append(f"\n… и ещё {len(orphan_ids) - _ADMIN_ROWS_LIMIT} осиротевших.")
-    lines.append("\nНажми на кнопку под сообщением, чтобы полностью удалить пользователя.")
-    text = "\n".join(lines)
+    total = len(by_user) + len(orphan_ids)
+    if not total:
+        return (note + "\n\n" if note else "") + "👥 В plan_progress и app_state сейчас нет ни одной записи."
+    text = (
+        f"👥 <b>Пользователи</b> (всего {total}).\n"
+        f"Нажми на ID, чтобы посмотреть его планы и стрики, или сразу на 🗑, чтобы удалить."
+    )
+    if len(by_user) > _ADMIN_ROWS_LIMIT or len(orphan_ids) > _ADMIN_ROWS_LIMIT:
+        text += f"\n\nПоказаны первые {_ADMIN_ROWS_LIMIT} из каждой группы."
     return (note + "\n\n" + text) if note else text
 
 def _admin_users_markup(rows: list, orphan_ids: list) -> dict:
-    seen_users = []
+    """Компактный список вместо простыни текста: одна строка на
+    пользователя — ID (открывает детальный просмотр планов) и отдельная
+    кнопка-корзина рядом (удаляет сразу, без захода внутрь). При росте
+    числа пользователей полный список планов каждого прямо в одном
+    сообщении стал бы нечитаемым полотном — детали теперь смотрятся по
+    запросу, а не все сразу."""
+    by_user = {}
     for row in rows:
-        uid = row.get("user_id")
-        if uid not in seen_users:
-            seen_users.append(uid)
+        by_user.setdefault(row.get("user_id"), []).append(row)
     buttons = [
-        [{"text": f"🗑 Удалить {uid}", "callback_data": f"adm_del:{uid}"}]
-        for uid in seen_users[:_ADMIN_ROWS_LIMIT]
+        [
+            {"text": str(uid), "callback_data": f"adm_view:{uid}"},
+            {"text": "🗑", "callback_data": f"adm_del:{uid}"},
+        ]
+        for uid in list(by_user.keys())[:_ADMIN_ROWS_LIMIT]
     ]
     buttons += [
-        [{"text": f"🗑 Удалить {uid} (🌫 осиротевший)", "callback_data": f"adm_del:{uid}"}]
+        [
+            {"text": f"🌫 {uid}", "callback_data": f"adm_view:{uid}"},
+            {"text": "🗑", "callback_data": f"adm_del:{uid}"},
+        ]
         for uid in orphan_ids[:_ADMIN_ROWS_LIMIT]
     ]
     return {"inline_keyboard": buttons}
+
+def _admin_user_detail_text(uid: int, urows: list) -> str:
+    if not urows:
+        return (
+            f"👤 <code>{uid}</code>\n\n"
+            f"🌫 Планов в plan_progress нет — это осиротевшая запись app_state "
+            f"(есть слепок мини-аппа, но ни одного зарегистрированного плана)."
+        )
+    lines = [f"👤 <b>Пользователь</b> <code>{uid}</code>\n"]
+    for r in urows:
+        lines.append(
+            f"• {_plan_title(r)} <code>[{r.get('plan_id') or '—'}]</code>\n"
+            f"  🔥 {r.get('streak', 0)} дней подряд (рекорд {r.get('max_streak', 0)}) · "
+            f"последнее чтение: {r.get('last_read_date') or 'никогда'}"
+        )
+    return "\n".join(lines)
+
+def _admin_user_detail_markup(uid: int) -> dict:
+    return {"inline_keyboard": [
+        [{"text": "🗑 Удалить этого пользователя", "callback_data": f"adm_del:{uid}"}],
+        [{"text": "← Назад к списку", "callback_data": "adm_list"}],
+    ]}
 
 async def _delete_app_state_row(user_id: int) -> None:
     """Удаляет строку app_state (полный слепок мини-аппа: выбранные планы,
@@ -2277,12 +2333,12 @@ async def _delete_app_state_row(user_id: int) -> None:
     при следующем открытии мини-аппа syncBackend() безусловно перезаписывает
     локальное состояние сохранённым на сервере app_state — и старые планы
     просто восстанавливаются заново, будто ничего не удаляли."""
-    async with httpx.AsyncClient() as client:
-        await client.delete(
-            f"{SUPABASE_URL}/rest/v1/app_state",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}"},
-        )
+    client = HTTP_CLIENT
+    await client.delete(
+        f"{SUPABASE_URL}/rest/v1/app_state",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}"},
+    )
 
 async def _wipe_user_completely(user_id: int) -> int:
     """Удаляет ВСЕ строки прогресса пользователя (по каждому его плану) и
@@ -2328,6 +2384,18 @@ async def _handle_admin_callback(callback: dict):
         await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
         return
 
+    if action == "adm_view" and len(parts) == 2:
+        try:
+            uid = int(parts[1])
+        except ValueError:
+            await bible_answer_callback(cq_id, "Ошибка данных")
+            return
+        await bible_answer_callback(cq_id)
+        rows = await _fetch_all_progress_rows()
+        urows = [r for r in rows if r.get("user_id") == uid]
+        await bible_edit_message(chat_id, message_id, _admin_user_detail_text(uid, urows), _admin_user_detail_markup(uid))
+        return
+
     if action == "adm_del" and len(parts) == 2:
         uid_s = parts[1]
         await bible_answer_callback(cq_id)
@@ -2364,22 +2432,22 @@ async def _handle_admin_callback(callback: dict):
 # ── Supabase: app_state (единый аккаунт на всех устройствах) ──
 
 async def sb_state_get(user_id: int):
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/app_state",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}", "limit": "1"},
-        )
-        data = r.json()
-        return data[0] if isinstance(data, list) and data else None
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/app_state",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}", "limit": "1"},
+    )
+    data = r.json()
+    return data[0] if isinstance(data, list) and data else None
 
 async def sb_state_upsert(user_id: int, data: dict):
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id",
-            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json={"user_id": user_id, "data": data},
-        )
+    client = HTTP_CLIENT
+    await client.post(
+        f"{SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id",
+        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"user_id": user_id, "data": data},
+    )
 
 # ── Supabase: bible_accounts (переживает удаление пользователя) ──
 # Отдельная от plan_progress/app_state табличка-маячок: одна строка на
@@ -2392,14 +2460,14 @@ async def sb_state_upsert(user_id: int, data: dict):
 # и не должен "воскрешать" стёртые данные через syncBackend()/pushState().
 
 async def sb_account_get(user_id: int):
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}", "limit": "1"},
-        )
-        data = r.json()
-        return data[0] if isinstance(data, list) and data else None
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}", "limit": "1"},
+    )
+    data = r.json()
+    return data[0] if isinstance(data, list) and data else None
 
 async def sb_account_ensure(user_id: int) -> dict:
     """Отдаёт строку аккаунта с её reset_token, создавая её при первом
@@ -2409,12 +2477,12 @@ async def sb_account_ensure(user_id: int) -> dict:
     row = await sb_account_get(user_id)
     if row:
         return row
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
-            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json={"user_id": user_id},
-        )
+    client = HTTP_CLIENT
+    r = await client.post(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"user_id": user_id},
+    )
     try:
         data = r.json()
     except Exception:
@@ -2431,12 +2499,12 @@ async def sb_account_rotate_reset(user_id: int) -> None:
     сверяет в checkAccountReset() перед тем, как синхронизировать
     состояние."""
     import uuid
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
-            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json={"user_id": user_id, "reset_token": str(uuid.uuid4()), "started_at": None},
-        )
+    client = HTTP_CLIENT
+    await client.post(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"user_id": user_id, "reset_token": str(uuid.uuid4()), "started_at": None},
+    )
 
 async def _remove_plan_from_app_state(user_id: int, plan_id: str) -> None:
     """Хирургически убирает ОДИН план из app_state (локального слепка
@@ -2471,8 +2539,8 @@ async def bible_send(chat_id: int, text: str, reply_markup: dict = None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{BIBLE_API}/sendMessage", json=payload)
+    client = HTTP_CLIENT
+    await client.post(f"{BIBLE_API}/sendMessage", json=payload)
 
 async def bible_answer_callback(callback_query_id: str, text: str = None):
     """Гасит "часики" на нажатой инлайн-кнопке. text (если задан) показывается
@@ -2480,8 +2548,8 @@ async def bible_answer_callback(callback_query_id: str, text: str = None):
     payload = {"callback_query_id": callback_query_id}
     if text:
         payload["text"] = text
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{BIBLE_API}/answerCallbackQuery", json=payload)
+    client = HTTP_CLIENT
+    await client.post(f"{BIBLE_API}/answerCallbackQuery", json=payload)
 
 async def bible_edit_message(chat_id: int, message_id: int, text: str, reply_markup: dict = None):
     """Редактирует уже отправленное сообщение на месте — админ-панель
@@ -2489,8 +2557,8 @@ async def bible_edit_message(chat_id: int, message_id: int, text: str, reply_mar
     плодит новые при каждом нажатии."""
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     payload["reply_markup"] = reply_markup or {"inline_keyboard": []}
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{BIBLE_API}/editMessageText", json=payload)
+    client = HTTP_CLIENT
+    await client.post(f"{BIBLE_API}/editMessageText", json=payload)
 
 def _bible_url(plan_id: Optional[str] = None) -> str:
     """Добавляем метку времени к ссылке — иначе Telegram кэширует старую версию
@@ -2556,15 +2624,16 @@ def bible_welcome_buttons() -> dict:
         {"text": CHANNEL_BTN_TEXT, "url": CHANNEL_LINK},
     ]]}
 
-def bible_start_keyboard() -> dict:
-    """Постоянная клавиатура внизу чата — «Старт» и «Поделиться с другом».
-    Рабочие кнопки («Открыть план чтения», канал) сюда намеренно не входят —
-    они инлайн-кнопки на приветственном сообщении (см. bible_welcome_buttons),
-    чтобы низ экрана не был перманентно занят кнопкой мини-аппа. Нажатие
-    «Старт» равносильно /start: бот заново присылает приветствие с кнопками.
-    Нажатие «Поделиться с другом» — см. bible_share_button()."""
+def bible_start_keyboard(registered: bool = False) -> dict:
+    """Постоянная клавиатура внизу чата. Для НОВОГО пользователя — «Старт» и
+    «Поделиться с другом»: «Старт» — единственный способ создать чат с ботом
+    (без него боту физически некуда слать напоминания, см.
+    sb_account_mark_started). Для УЖЕ зарегистрированного — «Старт» больше
+    не нужен (чат уже есть, started_at заполнен) и только запутывал бы,
+    поэтому остаётся одна «Поделиться с другом» (см. bible_share_button())."""
+    row = [{"text": SHARE_BTN_TEXT}] if registered else [{"text": "Старт"}, {"text": SHARE_BTN_TEXT}]
     return {
-        "keyboard": [[{"text": "Старт"}, {"text": SHARE_BTN_TEXT}]],
+        "keyboard": [row],
         "resize_keyboard": True,
         "is_persistent": True,
     }
@@ -2659,7 +2728,8 @@ class StateBody(BaseModel):
 # собственным временем напоминания.
 
 @app.post("/plan/register")
-async def bible_register(body: BibleRegisterBody):
+@limiter.limit("30/minute")
+async def bible_register(request: Request, body: BibleRegisterBody):
     _require_bible_user(body.user_id, body.init_data)
     from datetime import date
     payload = {
@@ -2705,7 +2775,8 @@ async def bible_status(user_id: int, plan_id: Optional[str] = None):
     return {"registered": bool(rows), "plans": rows}
 
 @app.post("/plan/read")
-async def bible_read(body: BibleReadBody):
+@limiter.limit("60/minute")
+async def bible_read(request: Request, body: BibleReadBody):
     _require_bible_user(body.user_id, body.init_data)
     from datetime import date, timedelta
     row = await sb_get_one(body.user_id, body.plan_id)
@@ -2745,12 +2816,12 @@ async def _delete_progress_row(user_id: int, plan_id: str) -> tuple:
     existing = await sb_get_one(user_id, plan_id)
     if not existing:
         return True, 0
-    async with httpx.AsyncClient() as client:
-        r = await client.delete(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers={**SB_HEADERS, "Prefer": "return=representation"},
-            params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
-        )
+    client = HTTP_CLIENT
+    r = await client.delete(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers={**SB_HEADERS, "Prefer": "return=representation"},
+        params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
+    )
     try:
         deleted_rows = r.json() if r.status_code in (200, 204) else []
     except Exception:
@@ -2773,7 +2844,8 @@ async def _delete_progress_row(user_id: int, plan_id: str) -> tuple:
 
 
 @app.post("/plan/unregister")
-async def bible_unregister(body: BibleUnregisterBody):
+@limiter.limit("30/minute")
+async def bible_unregister(request: Request, body: BibleUnregisterBody):
     _require_bible_user(body.user_id, body.init_data)
     """Полностью удаляет строку прогресса КОНКРЕТНОГО плана из plan_progress
     (остальные планы пользователя, если есть, не затрагиваются). Нужен,
@@ -2794,7 +2866,8 @@ async def bible_unregister(body: BibleUnregisterBody):
     return {"ok": ok, "deleted": deleted}
 
 @app.post("/plan/merge_days")
-async def bible_merge_days(body: BibleMergeDaysBody):
+@limiter.limit("30/minute")
+async def bible_merge_days(request: Request, body: BibleMergeDaysBody):
     _require_bible_user(body.user_id, body.init_data)
     """Объединяет присланный клиентом список прочитанных дней с тем, что
     уже есть на сервере — и только это. Нужен, потому что days_done
@@ -2825,7 +2898,8 @@ async def bible_merge_days(body: BibleMergeDaysBody):
     return {"ok": True, "days_done": merged}
 
 @app.post("/plan/set_days")
-async def bible_set_days(body: BibleSetDaysBody):
+@limiter.limit("30/minute")
+async def bible_set_days(request: Request, body: BibleSetDaysBody):
     _require_bible_user(body.user_id, body.init_data)
     """В отличие от /plan/merge_days — не объединяет, а ПЕРЕЗАПИСЫВАЕТ
     список прочитанных дней ровно тем, что прислали. Нужен для редактирования
@@ -2840,7 +2914,8 @@ async def bible_set_days(body: BibleSetDaysBody):
     return {"ok": True, "days_done": cleaned}
 
 @app.post("/plan/settings")
-async def bible_settings(body: BibleSettingsBody):
+@limiter.limit("30/minute")
+async def bible_settings(request: Request, body: BibleSettingsBody):
     _require_bible_user(body.user_id, body.init_data)
     await sb_patch(body.user_id, body.plan_id, {
         "notify_hour_msk": body.notify_hour_msk,
@@ -2883,7 +2958,8 @@ async def get_state(user_id: int, init_data: Optional[str] = None):
     return {"exists": True, "data": row.get("data"), "updated_at": row.get("updated_at")}
 
 @app.post("/state")
-async def save_state(body: StateBody):
+@limiter.limit("30/minute")
+async def save_state(request: Request, body: StateBody):
     _require_bible_user(body.user_id, body.init_data)
     await sb_state_upsert(body.user_id, body.data)
     return {"ok": True}
@@ -2901,24 +2977,24 @@ async def sb_account_mark_started(user_id: int) -> None:
     напоминаниям было физически некуда приходить. sb_upsert с
     merge-duplicates не трогает уже выставленный started_at повторными
     вызовами (это ЛЮБОЕ сообщение в чат, не только /start)."""
-    async with httpx.AsyncClient() as client:
-        existing = await client.get(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts",
-            headers=SB_HEADERS,
-            params={"user_id": f"eq.{user_id}", "select": "started_at", "limit": "1"},
-        )
+    client = HTTP_CLIENT
+    existing = await client.get(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts",
+        headers=SB_HEADERS,
+        params={"user_id": f"eq.{user_id}", "select": "started_at", "limit": "1"},
+    )
     try:
         rows = existing.json()
     except Exception:
         rows = []
     if rows and rows[0].get("started_at"):
         return
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
-            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json={"user_id": user_id, "started_at": datetime.now(timezone.utc).isoformat()},
-        )
+    client = HTTP_CLIENT
+    await client.post(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"user_id": user_id, "started_at": datetime.now(timezone.utc).isoformat()},
+    )
 
 @app.post("/webhook/bible")
 async def bible_webhook(request: Request):
@@ -2996,8 +3072,10 @@ async def bible_webhook(request: Request):
     #   2) короткая реплика, которая (пере)устанавливает постоянную
     #      клавиатуру внизу — а на ней теперь только «Старт», без «Открыть
     #      план чтения», чтобы низ экрана не был перманентно занят.
+    existing_account = await sb_account_get(chat_id)
+    already_registered = bool(existing_account and existing_account.get("started_at"))
     await bible_send(chat_id, BIBLE_WELCOME_TEXT, bible_welcome_buttons())
-    await bible_send(chat_id, "🙏", bible_start_keyboard())
+    await bible_send(chat_id, "🙏", bible_start_keyboard(registered=already_registered))
     await sb_account_mark_started(chat_id)
     return {"ok": True}
 
@@ -3111,17 +3189,17 @@ async def _claim_reminder_slot(user_id: int, plan_id: str, now_iso: str, cutoff_
     Возвращает True, если именно этот вызов успел "застолбить" слот (можно
     слать), False — если кто-то другой уже сделал это в течение последней
     минуты (пропускаем, не дублируем)."""
-    async with httpx.AsyncClient() as client:
-        r = await client.patch(
-            f"{SUPABASE_URL}/rest/v1/plan_progress",
-            headers={**SB_HEADERS, "Prefer": "return=representation"},
-            params={
-                "user_id": f"eq.{user_id}",
-                "plan_id": f"eq.{plan_id}",
-                "or": f"(last_reminder_sent_at.is.null,last_reminder_sent_at.lt.{cutoff_iso})",
-            },
-            json={"last_reminder_sent_at": now_iso},
-        )
+    client = HTTP_CLIENT
+    r = await client.patch(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers={**SB_HEADERS, "Prefer": "return=representation"},
+        params={
+            "user_id": f"eq.{user_id}",
+            "plan_id": f"eq.{plan_id}",
+            "or": f"(last_reminder_sent_at.is.null,last_reminder_sent_at.lt.{cutoff_iso})",
+        },
+        json={"last_reminder_sent_at": now_iso},
+    )
     try:
         rows = r.json() if r.status_code == 200 else []
     except Exception:
