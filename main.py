@@ -1,4 +1,5 @@
 import os
+import sentry_sdk
 import html as _html
 import hmac
 import hashlib
@@ -31,6 +32,18 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("radio")
+
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+if SENTRY_DSN:
+    # Ловит необработанные исключения автоматически (крэши запросов) — не
+    # трогает то, что уже поймано и осознанно проглочено внутри кода
+    # (например, самовосстановление в markRead при сбое сети — это
+    # ожидаемое, штатное поведение, а не баг, шуметь о нём в Sentry не
+    # нужно). traces_sample_rate=0.1 — лёгкий трейсинг производительности
+    # без быстрого исчерпания бесплатного лимита событий.
+    sentry_sdk.init(dsn=SENTRY_DSN, environment="production", traces_sample_rate=0.1)
+else:
+    log.warning("SENTRY_DSN не задан — оповещения об ошибках отключены (см. DEPLOY_CHECKLIST.md)")
 
 app = FastAPI()
 
@@ -3213,7 +3226,6 @@ async def _claim_reminder_slot(user_id: int, plan_id: str, now_iso: str, cutoff_
         rows = []
     return bool(rows)
 
-@bible_scheduler.scheduled_job("cron", minute="*")
 async def _disable_reminders_for_blocked_user(user_id: int) -> None:
     """Telegram ответил 403 (бот заблокирован или пользователь удалил
     аккаунт) — дальше пытаться слать этому user_id ежедневные напоминания
@@ -3231,6 +3243,7 @@ async def _disable_reminders_for_blocked_user(user_id: int) -> None:
     )
     log.info(f"bible: user_id={user_id} — 403 от Telegram (бот заблокирован), напоминания отключены для всех его планов")
 
+@bible_scheduler.scheduled_job("cron", minute="*")
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return
