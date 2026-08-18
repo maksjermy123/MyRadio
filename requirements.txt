@@ -6,3 +6,4 @@ python-multipart
 aiogram==3.27.0
 apscheduler
 slowapi
+sentry_sdk
