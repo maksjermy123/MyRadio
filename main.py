@@ -1,5 +1,4 @@
 import os
-import sentry_sdk
 import html as _html
 import hmac
 import hashlib
@@ -32,18 +31,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("radio")
-
-SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
-if SENTRY_DSN:
-    # Ловит необработанные исключения автоматически (крэши запросов) — не
-    # трогает то, что уже поймано и осознанно проглочено внутри кода
-    # (например, самовосстановление в markRead при сбое сети — это
-    # ожидаемое, штатное поведение, а не баг, шуметь о нём в Sentry не
-    # нужно). traces_sample_rate=0.1 — лёгкий трейсинг производительности
-    # без быстрого исчерпания бесплатного лимита событий.
-    sentry_sdk.init(dsn=SENTRY_DSN, environment="production", traces_sample_rate=0.1)
-else:
-    log.warning("SENTRY_DSN не задан — оповещения об ошибках отключены (см. DEPLOY_CHECKLIST.md)")
 
 app = FastAPI()
 
