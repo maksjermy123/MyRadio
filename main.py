@@ -284,6 +284,29 @@ GROQ_PROMPT = """
 
 _github_lock = asyncio.Lock()
 
+# ── TTL-кэш GitHub-файлов ─────────────────────────────────────
+# posts.json и links.json читаются с GitHub при каждом вебхуке, клике
+# «Глубже» (/links/{id}) и на каждом шаге process_post - это 2 запроса
+# к GitHub API (meta + blob) на каждое чтение и 300-800мс латентности.
+# Кэш с TTL 45с: пользователь всегда видит данные максимум минутной давности,
+# а число обращений к GitHub падает в разы (важно из-за rate limit 5000/ч).
+# Инвалидация: github_put() сбрасывает кэш конкретного файла после записи,
+# поэтому запись всегда видна сразу же - консистентность внутри процесса полная.
+_GH_CACHE = {}          # filename -> {"data":..., "sha":..., "ts": float}
+_GH_CACHE_TTL = 45.0    # секунды
+
+def _gh_cache_get(filename: str):
+    ent = _GH_CACHE.get(filename)
+    if ent and (time.time() - ent["ts"]) < _GH_CACHE_TTL:
+        return ent["data"], ent["sha"]
+    return None, None
+
+def _gh_cache_put(filename: str, data, sha) -> None:
+    _GH_CACHE[filename] = {"data": data, "sha": sha, "ts": time.time()}
+
+def _gh_cache_drop(filename: str) -> None:
+    _GH_CACHE.pop(filename, None)
+
 
 # ── GitHub API ────────────────────────────────────────────────
 def _gh_headers() -> dict:
@@ -291,6 +314,11 @@ def _gh_headers() -> dict:
 
 
 async def github_get(client: httpx.AsyncClient, filename: str):
+    # Сначала кэш: экономит 2 запроса к GitHub API и ~0.5с латентности на каждое
+    # чтение. Свежесть данных - до _GH_CACHE_TTL секунд, запись всегда инвалидирует.
+    data, sha = _gh_cache_get(filename)
+    if data is not None:
+        return data, sha
     meta_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
     r = await client.get(meta_url, headers=_gh_headers(), params={"ref": GITHUB_BRANCH})
     if r.status_code == 404:
@@ -315,6 +343,7 @@ async def github_get(client: httpx.AsyncClient, filename: str):
         data = r2.json()
     except Exception:
         data = json.loads(r2.text)
+    _gh_cache_put(filename, data, sha)
     return data, sha
 
 
@@ -329,12 +358,22 @@ async def github_put(client: httpx.AsyncClient, filename: str, content: dict, sh
     for attempt in range(3):
         r = await client.put(url, headers=_gh_headers(), json=body)
         if r.status_code in (200, 201):
-            return r.json()
+            result = r.json()
+            # Запись успешна - обновляем кэш свежими данными и sha,
+            # чтобы следующее чтение сразу увидело результат без похода в GitHub.
+            _gh_cache_put(filename, content, result.get("content", {}).get("sha", body.get("sha")))
+            return result
         if r.status_code == 409 and attempt < 2:
+            _gh_cache_drop(filename)  # sha устарел - кэш недоверяем
             _, new_sha = await github_get(client, filename)
             if new_sha:
                 body["sha"] = new_sha
             await asyncio.sleep(1)
+            continue
+        if r.status_code >= 500 and attempt < 2:
+            # Временный сбой GitHub: повторяем, чтобы не потерять результат
+            # уже потраченного AI-анализа (Groq/Cohere стоят денег).
+            await asyncio.sleep(2 * (attempt + 1))
             continue
         r.raise_for_status()
 
@@ -788,7 +827,13 @@ async def analyze_post(post_text: str, topics: list):
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
         text = _strip_json_fence(text)
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Модель иногда ломает JSON (обрезка, лишний текст). Одна повторная
+            # попытка дешевле, чем потерять весь вызов Groq.
+            log.warning("Groq вернул невалидный JSON, повторная попытка...")
+            continue
     raise Exception("Groq rate limit: все 3 попытки исчерпаны")
 
 
@@ -1119,9 +1164,11 @@ def verify_telegram_init_data(init_data, bot_token, *, max_age_seconds=86400):
     return {"user": user, "auth_date": auth_date}
 
 
-def _host_is_public(host: str) -> bool:
+async def _host_is_public(host: str) -> bool:
+    # getaddrinfo блокирует event loop на сотни мс (при проблемах DNS - секунды).
+    # Уносим в отдельный поток, чтобы /metadata не тормозил остальные запросы.
     try:
-        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        infos = await asyncio.get_event_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError:
         return False
     for info in infos:
@@ -1144,7 +1191,7 @@ async def fetch_icy_metadata(stream_url: str):
         host = p.hostname
         port = p.port or (443 if p.scheme == "https" else 80)
         path = (p.path or "/") + (f"?{p.query}" if p.query else "")
-        if not _host_is_public(host):
+        if not await _host_is_public(host):
             return None
         ssl_ctx = ssl.create_default_context() if p.scheme == "https" else None
         reader, writer = await asyncio.wait_for(
@@ -1352,14 +1399,21 @@ async def webhook(request: Request):
         log.warning(f"update_id={update_id}: чужой чат @{chat_username} — пропускаем")
         return {"ok": True, "action": "ignored_wrong_chat"}
 
-    result = await upsert_post_to_github(message, is_edit=is_edit)
+    # Раньше upsert_post_to_github await'ился до ответа Telegram: 2-4 запроса
+    # к GitHub (до 20+ секунд с retry) удерживали вебхук, Telegram при таймауте
+    # повторял доставку - лишние дубликаты апдейтов. Теперь сохранение поста
+    # и AI-обработка живут в фоновых тасках, вебхук отвечает мгновенно.
+    # Дедупликация по message_id внутри upsert уже защищает от повторов.
+    async def _save_and_process():
+        result = await upsert_post_to_github(message, is_edit=is_edit)
+        if result == "added":
+            tags = extract_hashtags(message)
+            if should_process_ai(tags):
+                await process_post(message)
 
-    if result == "added":
-        tags = extract_hashtags(message)
-        if should_process_ai(tags):
-            asyncio.create_task(process_post(message))
+    asyncio.create_task(_save_and_process())
 
-    return {"ok": True, "action": result, "post_id": message.get("message_id")}
+    return {"ok": True, "action": "accepted", "post_id": message.get("message_id")}
 
 
 @app.get("/links/{post_id}")
@@ -3267,7 +3321,8 @@ async def _disable_reminders_for_blocked_user(user_id: int) -> None:
     )
     log.info(f"bible: user_id={user_id} — 403 от Telegram (бот заблокирован), напоминания отключены для всех его планов")
 
-@bible_scheduler.scheduled_job("cron", minute="*")
+@bible_scheduler.scheduled_job("cron", minute="*", max_instances=1,
+                               misfire_grace_time=30, coalesce=True)
 async def bible_send_reminders():
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return
