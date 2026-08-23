@@ -2850,6 +2850,43 @@ async def _delete_progress_row(user_id: int, plan_id: str) -> tuple:
     return ok, len(deleted_rows)
 
 
+@app.post("/plan/unread")
+@limiter.limit("30/minute")
+async def bible_unread(request: Request, body: BibleReadBody):
+    """Отмена отметки "Прочитал" (undo в мини-аппе). Убирает день из days_done
+    и пересчитывает стрик по оставшимся дням: если после удаления дня не осталось
+    ни одного прочитанного с датой today - стрик откатывается к значению до
+    сегодняшнего чтения. Безопасно: не удаляет строку прогресса, только правит поля."""
+    _require_bible_user(body.user_id, body.init_data)
+    row = await sb_get_one(body.user_id, body.plan_id)
+    if not row:
+        return {"ok": False, "error": "not registered"}
+    from datetime import date
+    try:
+        today = date.fromisoformat(body.local_date).isoformat() if body.local_date else date.today().isoformat()
+    except ValueError:
+        today = date.today().isoformat()
+    days_done = [d for d in (row.get("days_done") or []) if d != body.day_number]
+    if len(days_done) == len(row.get("days_done") or []):
+        return {"ok": True, "already": True}
+    # Пересчёт стрика: если today больше не в days_done - чтение сегодня отменено.
+    # Стрик откатываем: убираем эффект сегодняшнего чтения.
+    streak = row.get("streak", 0)
+    last = row.get("last_read_date")
+    patch = {"days_done": days_done}
+    if last == today and body.day_number in (row.get("days_done") or []):
+        # Сегодняшнее чтение отменено: восстанавливаем last_read_date как "вчера",
+        # а стрик уменьшаем на 1 (не ниже 0). Точное восстановление предыдущего
+        # значения невозможно без истории - это честный компромисс.
+        from datetime import timedelta
+        yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+        patch["last_read_date"] = yesterday
+        patch["streak"] = max(0, streak - 1)
+        patch["max_streak"] = row.get("max_streak", 0)
+    await sb_patch(body.user_id, body.plan_id, patch)
+    return {"ok": True, "streak": patch.get("streak", streak), "days_done": days_done}
+
+
 @app.post("/plan/unregister")
 @limiter.limit("30/minute")
 async def bible_unregister(request: Request, body: BibleUnregisterBody):
