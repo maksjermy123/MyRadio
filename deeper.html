@@ -344,9 +344,29 @@
       if (seconds <= 0) {
         clearInterval(retryTimer);
         retryCount++;
-        if (retryCount < 4) await load();
+        if (retryCount < 4) { await load(); }
+        else {
+          // Автоповторы исчерпаны - честно сообщаем и даём ручную кнопку,
+          // вместо бесконечного экрана "Материалы готовятся...".
+          clearInterval(retryTimer);
+          const app = document.getElementById("app");
+          app.innerHTML = `<div class="state-box">
+            <div class="icon">⏳</div>
+            <p>Материалы для этого поста ещё готовятся.<br>
+            Обычно это занимает несколько минут.</p>
+            <button class="retry-btn" onclick="retryCount=0;load()">Проверить снова</button>
+          </div>`;
+        }
       }
     }, 1000);
+  }
+
+  // R5: экранирование HTML в данных, приходящих от AI/GitHub - кавычка или
+  // угловая скобка в тексте больше не ломают разметку карточки.
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function verseCount(ref) {
@@ -372,10 +392,27 @@
 
     sub.textContent = `Пост #${currentPostId}`;
 
+    // R2: stale-while-revalidate - мгновенный показ кэша при повторном открытии
+    if (!forceRefresh && !currentData) {
+      const cached = sessionStorage.getItem(`links_${currentPostId}`);
+      if (cached) {
+        try {
+          currentData = JSON.parse(cached);
+          render(currentData, currentPostId);
+          sub.textContent = `Пост #${currentPostId} · обновляем...`;
+        } catch (e) { sessionStorage.removeItem(`links_${currentPostId}`); }
+      }
+    }
+
     try {
+      // R1: таймаут 15с - холодный старт Render или медленная сеть больше
+      // не оставляют страницу висеть навечно; сработает catch с кнопкой "Повторить".
+      const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timeout = setTimeout(() => { if (ctrl) ctrl.abort(); }, 15000);
       const r = await fetch(`${BACKEND}/links/${currentPostId}`, {
-        cache: forceRefresh ? 'reload' : 'default'
-      });
+        cache: forceRefresh ? 'reload' : 'default',
+        signal: ctrl ? ctrl.signal : undefined
+      }).finally(() => clearTimeout(timeout));
 
       if (r.status === 404) {
         clearInterval(retryTimer);
@@ -394,6 +431,7 @@
       clearInterval(retryTimer);
       retryCount = 0;
       currentData = await r.json();
+      try { sessionStorage.setItem(`links_${currentPostId}`, JSON.stringify(currentData)); } catch (e) {}
       if (forceRefresh) hapticNotif('success');
       render(currentData, currentPostId);
 
@@ -526,9 +564,15 @@
       initExpandBtns();
       if (savedScroll) window.scrollTo(0, parseInt(savedScroll));
     }, 50);
-    window.addEventListener('scroll', () => {
-      sessionStorage.setItem(`scroll_${postId}`, window.scrollY);
-    }, { passive: true });
+    // R3: слушатель ставится ОДИН раз (раньше каждый render добавлял новый -
+    // десятки дублирующихся обработчиков писали в sessionStorage).
+    if (!window._scrollWired) {
+      window._scrollWired = true;
+      window.addEventListener('scroll', () => {
+        if (window._curPostId) sessionStorage.setItem(`scroll_${window._curPostId}`, window.scrollY);
+      }, { passive: true });
+    }
+    window._curPostId = postId;
   }
 
   load();
