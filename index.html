@@ -501,14 +501,14 @@ function loadPlan(){
      регистрации сразу попадал в Mini App выбирать план — а уведомления
      потом просто никуда не приходили, потому что чата с ботом так и не
      возникло. */
-  fetch(BACKEND+'/account/status?user_id='+userId)
+  fetchT(BACKEND+'/account/status?user_id='+userId)
     .then(function(r){return r.json();})
     .then(function(a){
       if(!a||!a.registered){
         renderNotRegistered(body);
         return;
       }
-      return fetch(BACKEND+'/plan/status?user_id='+userId)
+      return fetchT(BACKEND+'/plan/status?user_id='+userId)
         .then(function(r){return r.json();})
         .then(function(d){
           if(d&&d.registered) renderPlanProgress(body,d.plans||[]);
@@ -816,7 +816,7 @@ function updPlayBtn(on){
 function setBars(on){for(var i=1;i<=5;i++){var b=document.getElementById('b'+i);if(b)on?b.classList.remove('p'):b.classList.add('p');}}
 function setVol(v){v=parseInt(v);aud.volume=v/100;aud.muted=false;isMuted=false;document.getElementById('vp').textContent=v+'%';document.getElementById('vi').textContent=v===0?'🔇':v<40?'🔉':'🔊';}
 function toggleMute(){if(isMuted){isMuted=false;aud.muted=false;document.getElementById('vs').value=prevVol;setVol(prevVol);}else{isMuted=true;prevVol=document.getElementById('vs').value;aud.muted=true;document.getElementById('vp').textContent='0%';document.getElementById('vi').textContent='🔇';}}
-function fetchMeta(s){fetch(BACKEND+'/metadata?url='+encodeURIComponent(s.url)).then(function(r){return r.json();}).then(function(d){if(d.title){var el=document.getElementById('trk-'+s.id);if(el)el.textContent='♪ '+d.title;document.getElementById('bp-trk').textContent='♪ '+d.title;}}).catch(function(){});}
+function fetchMeta(s){fetchT(BACKEND+'/metadata?url='+encodeURIComponent(s.url)).then(function(r){return r.json();}).then(function(d){if(d.title){var el=document.getElementById('trk-'+s.id);if(el)el.textContent='♪ '+d.title;document.getElementById('bp-trk').textContent='♪ '+d.title;}}).catch(function(){});}
 function startMeta(s){fetchMeta(s);metaIv=setInterval(function(){fetchMeta(s);},30000);}
 function stopMeta(){if(metaIv){clearInterval(metaIv);metaIv=null;}}
 document.getElementById('bp-stop').addEventListener('click',stopAll);
@@ -827,17 +827,39 @@ function shareR(){
   if(tg&&tg.openTelegramLink){tg.openTelegramLink('https://t.me/share/url?url='+encodeURIComponent(BOT_LINK)+'&text='+encodeURIComponent(txt));}
   else{navigator.clipboard.writeText(BOT_LINK).then(function(){showToast('✓ Ссылка скопирована!');});}
 }
+/* fetch с таймаутом 10с: холодный старт Render или медленная сеть больше
+   не оставляют вкладку "План" в вечном ожидании. */
+function fetchT(url,opts){
+  opts=opts||{};
+  var ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+  var t=setTimeout(function(){if(ctl)ctl.abort();},opts.timeout||10000);
+  if(ctl)opts.signal=ctl.signal;
+  return fetch(url,opts).finally(function(){clearTimeout(t);});
+}
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2500);}
 
 /* ═══ ОГЛАВЛЕНИЕ ═══ */
+/* Оглавление: stale-while-revalidate. Кэш в sessionStorage даёт мгновенный
+   рендер при повторном открытии и спасает при сбое сети - вместо "Не удалось
+   загрузить" человек видит последний рабочий список постов. */
+var TOC_CACHE_KEY='radio_toc_cache';
 function loadTOC(){
+  var cached=null;
+  try{cached=JSON.parse(sessionStorage.getItem(TOC_CACHE_KEY)||'null');}catch(e){}
+  if(cached&&!tocData){
+    tocData=cached;
+    document.getElementById('toc-stats').textContent=(cached.total||cached.posts.length)+' постов · '+(cached.topics?cached.topics.length:0)+' категорий';
+    renderCats();
+  }
   fetch(POSTS_URL+'?t='+Date.now())
     .then(function(r){return r.json();})
     .then(function(d){
       tocData=d;
+      try{sessionStorage.setItem(TOC_CACHE_KEY,JSON.stringify(d));}catch(e){}
       document.getElementById('toc-stats').textContent=(d.total||d.posts.length)+' постов · '+(d.topics?d.topics.length:0)+' категорий';
       renderCats();
     }).catch(function(){
+      if(tocData)return; /* кэш уже показан - не пугаем ошибкой */
       document.getElementById('toc-stats').textContent='Ошибка загрузки';
       document.getElementById('cat-grid').innerHTML='<div class="toc-empty" style="grid-column:1/-1;color:#c0392b">Не удалось загрузить</div>';
     });
@@ -1045,7 +1067,7 @@ function showDenied(reason){
 function checkSub(){
   if(!tg){showDenied('no_telegram');return;}
   if(!tg.initData||tg.initData===''){showDenied('no_data');return;}
-  fetch(BACKEND+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:tg.initData})})
+  fetchT(BACKEND+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:tg.initData})})
     .then(function(r){if(!r.ok)throw new Error();return r.json();})
     .then(function(d){if(d.allowed)showMain();else showDenied('not_subscribed');})
     .catch(function(){showDenied('error');});
@@ -1054,7 +1076,7 @@ function recheckSub(){
   var btn=document.getElementById('brec'),msg=document.getElementById('rm');
   btn.disabled=true;btn.textContent='⏳ Проверяю...';msg.textContent='';
   if(!tg||!tg.initData){msg.textContent='Откройте через Telegram.';btn.disabled=false;btn.textContent='✓ Я подписался — проверить';return;}
-  fetch(BACKEND+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:tg.initData})})
+  fetchT(BACKEND+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:tg.initData})})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.allowed){document.getElementById('ds').classList.remove('vis');showMain();}
