@@ -5,23 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>📚 Глубже — От чтения к Преображению</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #f5f0e8; --card: #fffdf8; --accent: #2e7d32; --accent2: #4caf50;
-      --text: #000000; --muted: #444444; --border: #e0d8cc;
-      --shadow: 0 2px 12px rgba(0,0,0,0.07); --quote-bg: #f7f3ea;
-      --chip-bg: #e8f5e9; --skeleton: #e8e2d8; --skeleton2: #f0ebe2;
+      /* Премиум-бронза для подписчиков: тёплый кремовый + золотистый акцент */
+      --bg: #FCFAF5; --card: #FFFEFA; --accent: #B08D4A; --accent2: #C9A45C;
+      --text: #1F1A10; --muted: #8A7A55; --border: #EEE7D8;
+      --shadow: 0 1px 8px rgba(140,110,50,.06); --quote-bg: #FBF7EC;
+      --chip-bg: #F6EFDF; --skeleton: #EFE9DB; --skeleton2: #F6F1E5;
     }
     .dark {
-      --bg: #1a1a1a; --card: #242424; --accent: #4caf50; --accent2: #66bb6a;
-      --text: #e8e8e8; --muted: #888; --border: #333;
-      --shadow: 0 2px 12px rgba(0,0,0,0.3); --quote-bg: #1e2a1e;
-      --chip-bg: #1e2a1e; --skeleton: #2e2e2e; --skeleton2: #383838;
+      --bg: #191611; --card: #211D16; --accent: #C9A45C; --accent2: #D9BC80;
+      --text: #EFEAE0; --muted: #9A8C6E; --border: #332C20;
+      --shadow: 0 2px 12px rgba(0,0,0,0.35); --quote-bg: #26211A;
+      --chip-bg: #2A241A; --skeleton: #2C2720; --skeleton2: #363025;
     }
     html { scroll-behavior: smooth; }
     body {
-      font-family: -apple-system,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text);
+      font-family: 'Inter',-apple-system,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text);
       min-height: 100vh; padding: 0 0 48px;
       transition: background 0.3s, color 0.3s; overscroll-behavior-y: contain;
     }
@@ -35,7 +39,7 @@
       position:sticky; top:0; z-index:10;
       display:flex; align-items:center; justify-content:space-between;
     }
-    .header-left h1 { font-family:Georgia,'Times New Roman',serif; font-size:1.4rem; font-weight:600; }
+    .header-left h1 { font-family:'Source Serif 4',Georgia,serif; font-size:1.45rem; font-weight:600; letter-spacing:.01em; }
     .header-left p { font-size:0.75rem; opacity:0.85; margin-top:1px; }
     .skeleton-wrap { padding:16px 12px; display:flex; flex-direction:column; gap:14px; }
     .skeleton-card { background:var(--card); border-radius:14px; overflow:hidden; box-shadow:var(--shadow); }
@@ -56,7 +60,7 @@
     .state-box p { font-size:0.95rem; line-height:1.6; }
     .state-box .retry-btn {
       margin-top:16px; padding:10px 24px; background:var(--accent); color:#fff;
-      border:none; border-radius:999px; font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;
+      border:none; border-radius:999px; font-family:'Inter',-apple-system,'Helvetica Neue',Arial,sans-serif;
       font-size:0.85rem; font-weight:700; cursor:pointer;
     }
     .countdown { font-weight:700; color:var(--accent); }
@@ -74,7 +78,7 @@
       border-bottom:1px solid var(--border);
     }
     .card-header h2 {
-      font-family:Georgia,'Times New Roman',serif; font-size:1.05rem;
+      font-family:'Source Serif 4',Georgia,serif; font-size:1.05rem;
       font-weight:600; color:var(--accent); flex:1;
     }
     .topics { display:flex; flex-wrap:wrap; gap:6px; padding:10px 14px 12px; }
@@ -105,14 +109,14 @@
     }
     .bible-ref-row { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
     .bible-ref {
-      font-family:Georgia,'Times New Roman',serif; font-size:1.12rem;
+      font-family:'Source Serif 4',Georgia,serif; font-size:1.12rem;
       font-weight:600; color:var(--accent); line-height:1.2;
     }
     .bible-verse-count { font-size:0.7rem; color:var(--muted); font-weight:600; }
     .bible-theme { font-size:0.78rem; color:var(--muted); margin-top:3px; line-height:1.4; }
     .bible-text-wrap { margin-top:9px; position:relative; }
     .bible-text {
-      font-family:Georgia,'Times New Roman',serif; font-size:1rem; line-height:1.65;
+      font-family:'Source Serif 4',Georgia,serif; font-size:1rem; line-height:1.65;
       color:var(--text); font-style:italic; padding:9px 11px;
       background:var(--quote-bg); border-left:3px solid var(--accent2);
       border-radius:0 6px 6px 0; max-height:150px; overflow:hidden;
@@ -127,14 +131,14 @@
       display:flex; align-items:center; justify-content:center; gap:4px;
       width:100%; font-size:0.75rem; font-weight:700; color:var(--accent);
       background:none; border:none; padding:6px 0 2px; cursor:pointer;
-      font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; -webkit-tap-highlight-color:transparent;
+      font-family:'Inter',-apple-system,'Helvetica Neue',Arial,sans-serif; -webkit-tap-highlight-color:transparent;
     }
     .expand-btn.hidden { display:none; }
     .trans-links { margin-top:9px; }
     .trans-btn {
       font-size:0.75rem; font-weight:700; padding:5px 14px; border-radius:999px;
       background:var(--accent); color:#fff; border:none; cursor:pointer;
-      font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; -webkit-tap-highlight-color:transparent;
+      font-family:'Inter',-apple-system,'Helvetica Neue',Arial,sans-serif; -webkit-tap-highlight-color:transparent;
       transition:opacity 0.15s;
     }
     .trans-btn:active { opacity:0.8; }
@@ -151,7 +155,7 @@
        когда-нибудь появится в данных. */
     .theology-title:empty { display:none; margin:0; }
     .theology-text {
-      font-family:Georgia,'Times New Roman',serif; font-size:1rem; line-height:1.65;
+      font-family:'Source Serif 4',Georgia,serif; font-size:1rem; line-height:1.65;
       font-style:italic; color:var(--text); padding:8px 11px;
       background:var(--quote-bg); border-left:3px solid var(--accent2);
       border-radius:0 6px 6px 0; max-height:140px; overflow:hidden;
@@ -163,7 +167,7 @@
       background:linear-gradient(transparent, var(--quote-bg));
     }
     .reflection-body {
-      padding:13px 14px; font-family:Georgia,'Times New Roman',serif;
+      padding:13px 14px; font-family:'Source Serif 4',Georgia,serif;
       font-size:1.08rem; line-height:1.65; font-style:italic; color:var(--text);
     }
     .reflection-body::before { content:'«'; color:var(--accent); }
@@ -175,7 +179,7 @@
     }
     .humor-emoji { font-size:2.5rem; margin-bottom:12px; }
     .humor-quote {
-      font-family:Georgia,'Times New Roman',serif; font-size:1.15rem;
+      font-family:'Source Serif 4',Georgia,serif; font-size:1.15rem;
       font-style:italic; line-height:1.65; color:var(--text);
     }
     .humor-quote::before { content:'«'; color:var(--accent); }
@@ -184,7 +188,7 @@
     .bottom-actions { padding:4px 12px 8px; display:flex; flex-direction:column; gap:8px; }
     .bottom-btn {
       width:100%; padding:13px; border-radius:12px; border:none;
-      font-family:-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:0.9rem; font-weight:700;
+      font-family:'Inter',-apple-system,'Helvetica Neue',Arial,sans-serif; font-size:0.9rem; font-weight:700;
       cursor:pointer; -webkit-tap-highlight-color:transparent; transition:opacity 0.15s;
     }
     .bottom-btn:active { opacity:0.8; }
