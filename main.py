@@ -3441,11 +3441,25 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
             started = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
         except Exception:
             continue
-        age_days = (now_msk - started).days
-        # График: 2-й день, затем каждые 3 дня (5, 8, 11, 14)
-        schedule_days = [2, 5, 8, 11, 14]
-        if sent_n >= len(schedule_days) or age_days < schedule_days[sent_n]:
-            continue
+        # Интервал считается от ПОСЛЕДНЕГО напоминания (onboarding_last_at),
+        # а не от started_at. Иначе для тех, кто зарегистрировался давно,
+        # age_days навсегда больше любого порога графика — и вся цепочка
+        # из 5 сообщений уходила бы подряд за 5 минут (реальный баг,
+        # пойманный вживую: два сообщения минута в минуту).
+        first_allowed = started + timedelta(days=2)
+        last_raw = a.get("onboarding_last_at")
+        if sent_n == 0:
+            if now_msk < first_allowed:
+                continue
+        else:
+            if not last_raw:
+                continue  # счётчик есть, а метки нет — не рискуем дублем
+            try:
+                last_sent = datetime.fromisoformat(last_raw.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if now_msk < last_sent + timedelta(days=3):
+                continue
         # Атомарный claim ДО отправки: инкрементируем счётчик условным PATCH
         # (только если он всё ещё равен прочитанному значению) и проверяем,
         # что обновилась ровно наша строка. Раньше счётчик инкрементировался
@@ -3460,7 +3474,13 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
                 "user_id": f"eq.{uid}",
                 "onboarding_nudges": f"eq.{sent_n}",
             },
-            json={"onboarding_nudges": sent_n + 1},
+            # Записываем и счётчик, И метку времени одним атомарным PATCH:
+            # без метки следующий запуск cron не смог бы вычислить интервал
+            # (реальный баг: сообщения уходили минута в минуту).
+            json={
+                "onboarding_nudges": sent_n + 1,
+                "onboarding_last_at": now_msk.isoformat(),
+            },
         )
         try:
             claimed_rows = claim.json() if claim.status_code == 200 else []
