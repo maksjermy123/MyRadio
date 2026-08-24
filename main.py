@@ -2315,24 +2315,81 @@ async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
         orphans.append(uid)
     return orphans
 
+async def _fetch_onboarding_users(known_user_ids: set) -> list:
+    """Пользователи на онбординг-этапе: «Старт» нажат (started_at заполнен),
+    но ни одного плана нет и app_state тоже пуст. Раньше были невидимы для
+    админа — их данные живут только в bible_accounts, которую /users не читал.
+    Возвращает список user_id."""
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts",
+        headers=SB_HEADERS,
+        params={
+            "started_at": "not.is.null",
+            "select": "user_id",
+            "order": "user_id",
+            "limit": "1000",
+        },
+    )
+    try:
+        data = r.json()
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        data = []
+    result = []
+    for row in data:
+        uid = row.get("user_id")
+        if uid is None or uid in known_user_ids:
+            continue
+        result.append(uid)
+    return result
+
+async def _wipe_onboarding_account(user_id: int) -> None:
+    """Полный сброс онбординг-аккаунта (без планов и app_state): ротация
+    reset_token + очистка started_at и счётчика онбординг-напоминаний.
+    Пользователь вернётся к состоянию «никогда не жал Старт»."""
+    import uuid
+    client = HTTP_CLIENT
+    await client.post(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={
+            "user_id": user_id,
+            "reset_token": str(uuid.uuid4()),
+            "started_at": None,
+            "onboarding_nudges": 0,
+            "onboarding_last_at": None,
+        },
+    )
+
 _ADMIN_ROWS_LIMIT = 40
 
-def _admin_users_text(rows: list, orphan_ids: list, note: str = "") -> str:
+def _admin_users_text(rows: list, orphan_ids: list, onboarding_ids: list = None, note: str = "") -> str:
     by_user = {}
     for row in rows:
         by_user.setdefault(row.get("user_id"), []).append(row)
-    total = len(by_user) + len(orphan_ids)
+    # 🔕 — у пользователя все планы с notify_on=false (обычно после 403:
+    # заблокировал бота или удалил аккаунт). Виден в списке, но напоминания
+    # ему больше не уходят.
+    muted = {uid for uid, urows in by_user.items()
+             if urows and all(not r.get("notify_on", True) for r in urows)}
+    total = len(by_user) + len(orphan_ids) + len(onboarding_ids or [])
     if not total:
         return (note + "\n\n" if note else "") + "👥 В plan_progress и app_state сейчас нет ни одной записи."
     text = (
         f"👥 <b>Пользователи</b> (всего {total}).\n"
-        f"Нажми на ID, чтобы посмотреть его планы и стрики, или сразу на 🗑, чтобы удалить."
+        f"🔕 — напоминания отключены (часто: заблокировал бота).\n"
+        f"🌫 — осиротевший app_state без планов.\n"
+        f"🌱 — нажал «Старт», но план так и не выбрал.\n"
+        f"Нажми на ID для деталей или 🗑 для удаления."
     )
-    if len(by_user) > _ADMIN_ROWS_LIMIT or len(orphan_ids) > _ADMIN_ROWS_LIMIT:
+    if (len(by_user) > _ADMIN_ROWS_LIMIT or len(orphan_ids) > _ADMIN_ROWS_LIMIT
+            or len(onboarding_ids or []) > _ADMIN_ROWS_LIMIT):
         text += f"\n\nПоказаны первые {_ADMIN_ROWS_LIMIT} из каждой группы."
     return (note + "\n\n" + text) if note else text
 
-def _admin_users_markup(rows: list, orphan_ids: list) -> dict:
+def _admin_users_markup(rows: list, orphan_ids: list, onboarding_ids: list = None) -> dict:
     """Компактный список вместо простыни текста: одна строка на
     пользователя — ID (открывает детальный просмотр планов) и отдельная
     кнопка-корзина рядом (удаляет сразу, без захода внутрь). При росте
@@ -2342,9 +2399,16 @@ def _admin_users_markup(rows: list, orphan_ids: list) -> dict:
     by_user = {}
     for row in rows:
         by_user.setdefault(row.get("user_id"), []).append(row)
+    muted = {uid for uid, urows in by_user.items()
+             if urows and all(not r.get("notify_on", True) for r in urows)}
+    def _label(uid: int) -> str:
+        s = str(uid)
+        if uid in muted:
+            s = f"🔕 {s}"
+        return s
     buttons = [
         [
-            {"text": str(uid), "callback_data": f"adm_view:{uid}"},
+            {"text": _label(uid), "callback_data": f"adm_view:{uid}"},
             {"text": "🗑", "callback_data": f"adm_del:{uid}"},
         ]
         for uid in list(by_user.keys())[:_ADMIN_ROWS_LIMIT]
@@ -2356,6 +2420,14 @@ def _admin_users_markup(rows: list, orphan_ids: list) -> dict:
         ]
         for uid in orphan_ids[:_ADMIN_ROWS_LIMIT]
     ]
+    # Онбординг-этап: Старт есть, плана нет. Данные только в bible_accounts,
+    # поэтому раньше были невидимы для админа. Удаление здесь — полный сброс
+    # аккаунта (reset_token ротируется, started_at очищается).
+    for uid in (onboarding_ids or [])[:_ADMIN_ROWS_LIMIT]:
+        buttons.append([
+            {"text": f"🌱 {uid}", "callback_data": f"adm_view:{uid}"},
+            {"text": "🗑", "callback_data": f"adm_obdel:{uid}"},
+        ])
     return {"inline_keyboard": buttons}
 
 def _admin_user_detail_text(uid: int, urows: list) -> str:
@@ -2434,8 +2506,10 @@ async def _handle_admin_callback(callback: dict):
     if action == "adm_list":
         await bible_answer_callback(cq_id)
         rows = await _fetch_all_progress_rows()
-        orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
+        known = {r.get("user_id") for r in rows}
+        orphans = await _fetch_orphan_app_state_users(known)
+        onboarding = await _fetch_onboarding_users(known | set(orphans))
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, onboarding), _admin_users_markup(rows, orphans, onboarding))
         return
 
     if action == "adm_view" and len(parts) == 2:
@@ -2477,8 +2551,44 @@ async def _handle_admin_callback(callback: dict):
         await bible_answer_callback(cq_id, "Удалено ✅")
         note = f"✅ Пользователь <code>{uid}</code> полностью удалён ({deleted} план(ов) удалено, app_state очищен)."
         rows = await _fetch_all_progress_rows()
-        orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, note), _admin_users_markup(rows, orphans))
+        known = {r.get("user_id") for r in rows}
+        orphans = await _fetch_orphan_app_state_users(known)
+        onboarding = await _fetch_onboarding_users(known | set(orphans))
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, onboarding, note), _admin_users_markup(rows, orphans, onboarding))
+        return
+
+    if action == "adm_obdel" and len(parts) == 2:
+        # Удаление онбординг-аккаунта (Старт есть, планов нет): полный сброс
+        # bible_accounts-строки. Подтверждение — как у обычного удаления.
+        uid_s = parts[1]
+        await bible_answer_callback(cq_id)
+        await bible_edit_message(
+            chat_id, message_id,
+            f"⚠️ <b>Сбросить онбординг-аккаунт {uid_s}?</b>\n\n"
+            f"У пользователя нет ни плана, ни app_state — будет очищена только "
+            f"запись в bible_accounts (Старт, счётчик напоминаний). "
+            f"Он снова увидит экран «нажми Старт» при следующем заходе.",
+            {"inline_keyboard": [[
+                {"text": "✅ Да, сбросить", "callback_data": f"adm_obdelyes:{uid_s}"},
+                {"text": "❌ Отмена", "callback_data": "adm_list"},
+            ]]},
+        )
+        return
+
+    if action == "adm_obdelyes" and len(parts) == 2:
+        try:
+            uid = int(parts[1])
+        except ValueError:
+            await bible_answer_callback(cq_id, "Ошибка данных")
+            return
+        await _wipe_onboarding_account(uid)
+        await bible_answer_callback(cq_id, "Сброшено ✅")
+        note = f"✅ Онбординг-аккаунт <code>{uid}</code> сброшен."
+        rows = await _fetch_all_progress_rows()
+        known = {r.get("user_id") for r in rows}
+        orphans = await _fetch_orphan_app_state_users(known)
+        onboarding = await _fetch_onboarding_users(known | set(orphans))
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, onboarding, note), _admin_users_markup(rows, orphans, onboarding))
         return
 
     await bible_answer_callback(cq_id)
@@ -3145,8 +3255,10 @@ async def bible_webhook(request: Request):
                 await bible_send(chat_id, "SUPABASE_URL не настроен.")
             else:
                 rows = await _fetch_all_progress_rows()
-                orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
-                await bible_send(chat_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
+                known = {r.get("user_id") for r in rows}
+                orphans = await _fetch_orphan_app_state_users(known)
+                onboarding = await _fetch_onboarding_users(known | set(orphans))
+                await bible_send(chat_id, _admin_users_text(rows, orphans, onboarding), _admin_users_markup(rows, orphans, onboarding))
         return {"ok": True}
 
     if text == SHARE_BTN_TEXT:
