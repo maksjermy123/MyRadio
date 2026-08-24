@@ -3338,7 +3338,27 @@ async def bible_send_reminders():
         streak = u.get("streak", 0)
         lag = _days_behind(u)
         title = _plan_title(u)
-        if lag > 0:
+        days_done_n = len(u.get("days_done") or [])
+        if days_done_n == 0:
+            # План выбран, но не прочитано НИ ОДНОГО дня. Раньше такие
+            # получали обычное "время читать" (lag=0, streak=0) — и это
+            # выглядело как ошибка системы ("я же ещё не начинал!").
+            # Теперь — мягкая онбординг-цепочка: день 1 после старта,
+            # затем каждые 2 дня, пока человек не начнёт. Тексты дружелюбные,
+            # без давления: цель — побудить к ПЕРВОМУ шагу.
+            age_days = _plan_age_days(u)
+            if age_days <= 0:
+                continue  # план создан сегодня — ещё рано напоминать
+            if age_days == 1:
+                body = (f"🌱 «{title}»: план готов и ждёт тебя!\n"
+                        f"Первый день — самый лёгкий. Открой план и прочитай первый отрывок — это займёт пару минут.")
+            elif age_days <= 3:
+                body = (f"📖 «{title}»: ты выбрал план, но ещё не начал.\n"
+                        f"Начни с малого — один отрывок сегодня, и дальше пойдёт легче!")
+            else:
+                body = (f"⏳ «{title}»: ждёт тебя уже {age_days} {_ru_day_word(age_days)}.\n"
+                        f"Не обязательно догонять график — просто открой и прочитай один отрывок сегодня.")
+        elif lag > 0:
             word = _ru_day_word(lag)
             body = (
                 f"⚠️ «{title}»: отстаёшь на {lag} {word} от плана чтения.\n"
@@ -3356,3 +3376,100 @@ async def bible_send_reminders():
         if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
             blocked_this_run.add(u["user_id"])
             await _disable_reminders_for_blocked_user(u["user_id"])
+    # Онбординг-напоминания тем, кто нажал «Старт», но так и не выбрал план.
+    await bible_send_onboarding_nudges(now_msk)
+
+
+def _plan_age_days(u: dict) -> int:
+    """Сколько полных дней прошло с создания плана (start_date)."""
+    start_raw = u.get("start_date")
+    if not start_raw:
+        return 0
+    from datetime import date
+    try:
+        return (datetime.now(MSK).date() - date.fromisoformat(start_raw)).days
+    except ValueError:
+        return 0
+
+
+# ── Онбординг-напоминания: «Старт» есть, плана нет ───────────────────────
+# Человек нажал «Старт» в боте (started_at заполнен), но plan_progress для
+# него пуст — напоминать о чтении нечего, а следующий шаг (выбор плана)
+# сам по себе не случится. Мягкая цепочка: день 2, затем каждые 3 дня,
+# максимум 5 сообщений — ненавязчиво, но последовательно ведём к действию.
+ONBOARDING_MAX_NUDGES = 5
+
+async def bible_send_onboarding_nudges(now_msk) -> None:
+    client = HTTP_CLIENT
+    r = await client.get(
+        f"{SUPABASE_URL}/rest/v1/bible_accounts",
+        headers=SB_HEADERS,
+        params={
+            "started_at": "not.is.null",
+            "select": "user_id,started_at,onboarding_nudges",
+            "limit": "500",
+        },
+    )
+    try:
+        accounts = r.json() if r.status_code == 200 else []
+    except Exception:
+        accounts = []
+    if not accounts:
+        return
+    # user_id тех, у кого УЖЕ есть хотя бы один план — их исключаем
+    with_plan = set()
+    pr = await client.get(
+        f"{SUPABASE_URL}/rest/v1/plan_progress",
+        headers=SB_HEADERS,
+        params={"select": "user_id", "limit": "10000"},
+    )
+    try:
+        for row in (pr.json() if pr.status_code == 200 else []):
+            with_plan.add(row.get("user_id"))
+    except Exception:
+        pass
+    today = now_msk.date()
+    for a in accounts:
+        uid = a.get("user_id")
+        if uid in with_plan:
+            continue
+        sent_n = int(a.get("onboarding_nudges") or 0)
+        if sent_n >= ONBOARDING_MAX_NUDGES:
+            continue
+        started_raw = a.get("started_at")
+        try:
+            started = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        age_days = (now_msk - started).days
+        # График: 2-й день, затем каждые 3 дня (5, 8, 11, 14)
+        schedule_days = [2, 5, 8, 11, 14]
+        if sent_n >= len(schedule_days) or age_days < schedule_days[sent_n]:
+            continue
+        texts = {
+            0: ("👋 Привет! Ты открыл «План чтения Библии», но ещё не выбрал план.\n"
+                "Выбери удобный темп — от 30 дней до года — и начни с одного короткого отрывка."),
+            1: ("📖 Твой план чтения всё ещё ждёт выбора.\n"
+                "Есть планы на 30, 90 и 365 дней — найди свой и сделай первый шаг."),
+            2: ("🌱 Начать читать Библию проще, чем кажется.\n"
+                "Один отрывок в день — и уже через неделю это станет привычкой. Выбери план?"),
+            3: ("📚 Мы сохранили для тебя лучшие планы чтения.\n"
+                "Загляни и выбери тот, что подходит по темпу — начать никогда не поздно."),
+            4: ("🕊️ Последнее напоминание: план чтения Библии ждёт тебя.\n"
+                "Если сейчас не время — не страшно, бот всегда рядом. Мир тебе!"),
+        }
+        text = texts.get(sent_n, texts[1])
+        result = await bible_send(uid, text, {
+            "inline_keyboard": [[
+                {"text": "📅 Выбрать план", "web_app": {"url": _bible_url(None)}},
+            ]],
+        })
+        if result.get("error_code") == 403:
+            continue  # заблокировал бота — не считаем попытку, больше не пишем (нет планов → нет и обычных напоминаний)
+        # Фиксируем отправку атомарно (только если счётчик не изменился с момента чтения)
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
+            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates"},
+            params={"user_id": f"eq.{uid}", "onboarding_nudges": f"eq.{sent_n}"},
+            json={"onboarding_nudges": sent_n + 1},
+        )
