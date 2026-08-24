@@ -95,16 +95,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 
 /* ── ЕДИНАЯ ШАПКА ── */
 .app-hdr{
-  background:linear-gradient(175deg,var(--hdr-from) 0%,var(--hdr-mid) 55%,var(--bg) 100%);
+  /* Цветной зелёный градиент: белые надписи читаются на всей высоте шапки */
+  background:linear-gradient(175deg,#2E7D32 0%,#3E8E52 60%,#57A86B 100%);
   padding:16px 16px 14px;
 }
 .app-hdr-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .app-hdr-ico{font-size:36px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.3))}
 .app-hdr-texts{flex:1}
-.app-eyebrow{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:#BFE3C6;margin-bottom:2px;font-weight:700}
+.app-eyebrow{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,.75);margin-bottom:2px;font-weight:700}
 .app-title{font-family:'Source Serif 4',Georgia,serif;font-size:22px;font-weight:600;color:#fff;line-height:1.25}
-.app-chan{font-family:'Source Serif 4',Georgia,serif;font-size:17px;font-style:italic;color:rgba(255,255,255,.6);margin-top:2px}
-.app-sub{font-size:10px;color:rgba(255,255,255,.5);margin-top:3px}
+.app-chan{font-family:'Source Serif 4',Georgia,serif;font-size:17px;font-style:italic;color:rgba(255,255,255,.72);margin-top:2px}
+.app-sub{font-size:10px;color:rgba(255,255,255,.62);margin-top:3px}
 
 /* ── ПОИСК ── */
 .toc-sw{position:relative}
@@ -121,7 +122,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 .cat-card{border-radius:var(--radius);padding:12px 12px 12px 16px;cursor:pointer;position:relative;overflow:hidden;min-height:78px;display:flex;flex-direction:column;justify-content:flex-end;background:var(--surface);border:1px solid var(--border);transition:transform .18s,box-shadow .18s;box-shadow:0 1px 5px rgba(30,60,35,.06);}
 .cat-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--cat-accent,var(--green));opacity:.85}
 .cat-card:active{transform:scale(.97);box-shadow:0 2px 10px rgba(30,60,35,.12)}
-.cat-bg-ico{position:absolute;top:-4px;right:-2px;font-size:36px;opacity:.13;transform:rotate(8deg);pointer-events:none}
+.cat-bg-ico{position:absolute;top:-4px;right:-2px;font-size:36px;opacity:.26;transform:rotate(8deg);pointer-events:none}
 .cat-name{font-size:11.5px;font-weight:700;line-height:1.3;position:relative;z-index:1;color:var(--text)}
 .cat-cnt{font-size:10px;color:var(--muted);position:relative;z-index:1;margin-top:2px}
 @keyframes fup{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -153,7 +154,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 .stn::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--stn-accent,var(--green));opacity:.85}
 .stn.active{border-color:var(--green);box-shadow:0 2px 12px rgba(62,142,82,.18)}
 .stn:active{transform:scale(.97)}
-.stn-ico{position:absolute;top:50%;right:7px;transform:translateY(-55%) rotate(8deg);font-size:36px;opacity:.17;pointer-events:none}
+.stn-ico{position:absolute;top:50%;right:7px;transform:translateY(-55%) rotate(8deg);font-size:36px;opacity:.3;pointer-events:none}
 .stn-name{font-size:12px;font-weight:700;line-height:1.3;position:relative;z-index:1;color:var(--text)}
 .stn-desc{font-size:10px;color:var(--muted);position:relative;z-index:1}
 .stn-trk{font-size:10px;font-style:italic;font-family:'Source Serif 4',Georgia,serif;display:none;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;z-index:1}
