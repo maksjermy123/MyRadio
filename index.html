@@ -164,7 +164,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 .stn-trk{font-size:10px;font-style:italic;font-family:'Source Serif 4',Georgia,serif;display:none;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;z-index:1}
 .stn.active .stn-trk{display:block}
 .pbadge{position:absolute;top:6px;left:7px;background:rgba(0,0,0,.2);color:#fff;font-size:7px;font-weight:800;padding:2px 6px;border-radius:20px;z-index:2}
-.toast{position:fixed;bottom:calc(150px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%) translateY(12px);background:var(--green);color:#fff;padding:10px 20px;border-radius:50px;font-size:13px;font-weight:700;white-space:nowrap;opacity:0;transition:all .3s;z-index:300;pointer-events:none}
+.toast{position:fixed;bottom:calc(150px + var(--player-lift,12px) + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%) translateY(12px);background:var(--green);color:#fff;padding:10px 20px;border-radius:50px;font-size:13px;font-weight:700;white-space:nowrap;opacity:0;transition:all .3s;z-index:300;pointer-events:none}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
 /* ══════════════════════════════
@@ -194,10 +194,12 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 ══════════════════════════════ */
 /* Плавающий плеер: поднят над низом экрана, чтобы на телефонах с жестовой
    навигацией (полоска iOS / кнопка Android) не перекрывался ползунок
-   громкости. safe-area-inset-bottom учитывает вырезы и системные панели. */
+   громкости. safe-area-inset-bottom учитывает вырезы и системные панели.
+   На iOS подъём больше (24px): env(safe-area-inset-bottom) там часто = 0,
+   хотя жестовая полоска всё равно перекрывает нижние ~34px вьюпорта. */
 #bottom-player{
   position:fixed;
-  bottom:calc(env(safe-area-inset-bottom,0px) + 12px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + var(--player-lift,12px));
   left:10px;right:10px;
   background:rgba(255,253,248,.98);
   backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
@@ -236,8 +238,8 @@ input[type=range].vs::-webkit-slider-thumb{-webkit-appearance:none;width:16px;he
 input[type=range].vs::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--green);cursor:pointer;border:none}
 .vp{font-size:10px;color:var(--muted);min-width:28px;text-align:right;font-weight:700}
 /* Отступ снизу для контента когда плеер видим: высота плеера (~110px)
-   + подъём над низом (12px + safe-area) */
-.player-spacer{height:calc(130px + env(safe-area-inset-bottom,0px));display:block}
+   + подъём над низом (var(--player-lift) + safe-area) */
+.player-spacer{height:calc(130px + var(--player-lift,12px) + env(safe-area-inset-bottom,0px));display:block}
 </style>
 </head>
 <body>
@@ -435,7 +437,12 @@ var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 var isTGDesktop = tg && (tg.platform === 'tdesktop' || tg.platform === 'macos' || tg.platform === 'weba');
 var isTGWeb = tg && (tg.platform === 'web' || tg.platform === 'weba');
 
-if (isIOS) document.getElementById('vol-row').style.display='none';
+if (isIOS) {
+  document.getElementById('vol-row').style.display='none';
+  /* iOS: env(safe-area-inset-bottom) в Telegram WebView часто = 0, хотя
+     жестовая полоска перекрывает низ. Поднимаем плеер сильнее. */
+  document.documentElement.style.setProperty('--player-lift','28px');
+}
 
 if (tg) {
   tg.ready(); tg.expand();
