@@ -996,7 +996,12 @@ function openPost(url){
   починит эту особенность на своей стороне, visibilitychange будет
   срабатывать быстро, и запасной openLink() просто никогда не вызовется.
 */
-var TG_LINK_FALLBACK_MS = 700;
+/* 1500мс вместо 700: на iOS видимый переход в канал занимает дольше,
+   и короткий таймер запускал браузерный фолбэк даже при УСПЕШНОМ
+   openTelegramLink — пользователь видел лишнюю прослойку. Случай
+   "мини-апп открыт из того же канала" (перехода нет вообще) это
+   не лечит — там нужен репорт в @BotSupport. */
+var TG_LINK_FALLBACK_MS = 1500;
 
 function openViaTelegramLinkWithFallback(url){
   var settled = false;
