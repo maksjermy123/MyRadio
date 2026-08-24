@@ -136,6 +136,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 .pct{font-family:'Source Serif 4',Georgia,serif;font-size:20px;font-weight:600;color:var(--text2);padding:0 4px 10px}
 .post-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:12px 14px;cursor:pointer;display:block;text-decoration:none;color:inherit;transition:all .18s;margin-bottom:8px;box-shadow:0 1px 5px rgba(0,0,0,.05)}
 .post-card:active{transform:scale(.98);background:#f0f0e8}
+/* Подсветка после тапа: держится 300мс, чтобы пользователь видел отклик,
+   пока идёт переход (на iOS до 1.5с). :active не подходит — он работает
+   только пока палец на экране. */
+.post-card.pressed{transform:scale(.98);background:#f0f0e8;border-color:var(--acc)}
 .ptt{font-size:13px;font-weight:700;line-height:1.4;margin-bottom:4px}
 .ppv{font-size:11px;color:var(--muted);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px}
 .pmt{display:flex;align-items:center;justify-content:space-between}
@@ -440,6 +444,7 @@ if (tg) {
    поэтому «активная» кнопка/контент всегда синхронизированы между собой —
    в том числе и при первом открытии по диплинку (см. showMain -> getStartTab). */
 function switchTab(tab){
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
   curTab=tab;
   ['toc','radio','plan'].forEach(function(t){
     document.getElementById(t+'-tab').classList.toggle('active',t===tab);
@@ -807,6 +812,7 @@ aud.addEventListener('ended',function(){
 });
 
 function togglePlay(){
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
   if(!curStn) return;
   if(isPlaying){ aud.pause();isPlaying=false;updPlayBtn(false);stopMeta();if('mediaSession' in navigator)navigator.mediaSession.playbackState='paused'; }
   else{ aud.play();isPlaying=true;updPlayBtn(true);startMeta(curStn);startACtx();if('mediaSession' in navigator)navigator.mediaSession.playbackState='playing'; }
@@ -899,6 +905,7 @@ function openCat(name){
   updBack();
 }
 function showCats(){
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
   document.getElementById('toc-posts').classList.remove('vis');
   document.getElementById('toc-sres').classList.remove('vis');
   document.getElementById('toc-cats').style.display='block';
@@ -1029,7 +1036,15 @@ function renderCards(posts,container){
   if(!posts.length){container.innerHTML='<div class="toc-empty">Постов не найдено</div>';return;}
   posts.forEach(function(p){
     var a=document.createElement('a'); a.className='post-card'; a.href='#';
-    a.addEventListener('click',function(e){ e.preventDefault(); openPost(p.url); });
+    a.addEventListener('click',function(e){
+      e.preventDefault();
+      /* Мгновенный отклик: вибрация + подсветка карточки. Без этого на iOS
+         при ожидании перехода до 1.5с кажется, что тап не сработал. */
+      if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+      a.classList.add('pressed');
+      setTimeout(function(){a.classList.remove('pressed');},300);
+      openPost(p.url);
+    });
     a.innerHTML='<div class="ptt">'+esc(p.title)+'</div>'
       +(p.preview?'<div class="ppv">'+esc(p.preview)+'</div>':'')
       +'<div class="pmt"><span class="pdt">'+fmtD(p.date)+'</span><span class="plk">Открыть →</span></div>';
@@ -1087,6 +1102,7 @@ function checkSub(){
     .catch(function(){showDenied('error');});
 }
 function recheckSub(){
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
   var btn=document.getElementById('brec'),msg=document.getElementById('rm');
   btn.disabled=true;btn.textContent='⏳ Проверяю...';msg.textContent='';
   if(!tg||!tg.initData){msg.textContent='Откройте через Telegram.';btn.disabled=false;btn.textContent='✓ Я подписался — проверить';return;}
