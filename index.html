@@ -6,20 +6,22 @@
 <title>От чтения к Преображению</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet">
 <style>
 :root{
-  --green:#2e7d32;--green2:#1b5e20;--green3:#c8e6c9;
-  --orange:#e65100;--orange2:#ff6d00;--blue:#1565c0;
-  --hdr-from:#1a3a6c;--hdr-mid:#2255a0;
-  --bg:#f5f0e8;--surface:#fffdf8;
-  --text:#1a1208;--text2:#3d2b0a;--muted:#6d5a3a;
-  --border:rgba(100,70,20,.14);--border2:rgba(100,70,20,.26);
+  /* Подписной премиум: тёплая бронза на кремовом */
+  --bronze:#B08D4A;--bronze2:#C9A45C;--bronze-dark:#8A6D2F;--bronze-light:#F6EFDF;
+  --green:#3E8E52;--green2:#2E7D32;--green3:#EAF3EA; /* фирменный зелёный Плана */
+  --orange:#B08D4A;--orange2:#C9A45C;--blue:#8A6D2F;
+  --hdr-from:#9A7B35;--hdr-mid:#C9A45C;
+  --bg:#FCFAF5;--surface:#FFFEFA;
+  --text:#1F1A10;--text2:#3D3423;--muted:#8A7A55;
+  --border:rgba(140,110,50,.16);--border2:rgba(140,110,50,.28);
   --tab-h:60px;--radius:14px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overscroll-behavior:none}
-body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-height:100vh;overflow-x:hidden}
+body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sans-serif;min-height:100vh;overflow-x:hidden}
 
 /* ── ЗАГРУЗКА ── */
 #ls{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:200;transition:opacity .4s}
@@ -28,16 +30,16 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .sr{position:absolute;inset:0;border:3px solid var(--green3);border-top-color:var(--green);border-radius:50%;animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .si{font-size:22px}
-.lt{font-family:'Cormorant Garamond',serif;font-size:15px;font-style:italic;color:var(--muted)}
+.lt{font-family:'Source Serif 4',Georgia,serif;font-size:15px;font-style:italic;color:var(--muted)}
 
 /* ── ОТКАЗ ── */
 #ds{display:none;position:fixed;inset:0;background:linear-gradient(175deg,#ddeeff,var(--bg) 55%);flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px 28px;text-align:center;z-index:100}
 #ds.vis{display:flex}
-.di{font-size:56px}.dt{font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:600;color:var(--text2)}
+.di{font-size:56px}.dt{font-family:'Source Serif 4',Georgia,serif;font-size:28px;font-weight:600;color:var(--text2)}
 .dl{width:48px;height:2.5px;background:linear-gradient(90deg,transparent,var(--orange),transparent);margin:0 auto}
 .dd{font-size:14px;color:var(--text2);line-height:1.7;max-width:275px}
-.bs{padding:14px 28px;background:var(--green);border:none;color:#fff;font-family:'Nunito',sans-serif;font-size:13px;font-weight:800;letter-spacing:.05em;border-radius:50px;cursor:pointer;text-decoration:none;display:block;width:100%;max-width:260px;text-align:center;box-shadow:0 4px 16px rgba(46,125,50,.35)}
-.br{padding:13px 28px;background:transparent;border:2px solid var(--orange);color:var(--orange);font-family:'Nunito',sans-serif;font-size:13px;font-weight:800;border-radius:50px;cursor:pointer;display:block;width:100%;max-width:260px}
+.bs{padding:14px 28px;background:var(--green);border:none;color:#fff;font-family:'Inter',-apple-system,sans-serif;font-size:13px;font-weight:800;letter-spacing:.05em;border-radius:50px;cursor:pointer;text-decoration:none;display:block;width:100%;max-width:260px;text-align:center;box-shadow:0 4px 16px rgba(46,125,50,.35)}
+.br{padding:13px 28px;background:transparent;border:2px solid var(--orange);color:var(--orange);font-family:'Inter',-apple-system,sans-serif;font-size:13px;font-weight:800;border-radius:50px;cursor:pointer;display:block;width:100%;max-width:260px}
 .br:disabled{opacity:.5;cursor:default}
 .rm{font-size:12px;color:var(--muted);min-height:16px;font-style:italic}
 
@@ -60,7 +62,7 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
   display:flex;align-items:center;justify-content:center;gap:7px;
   padding:11px 8px 13px;
   cursor:pointer;border:none;
-  font-family:'Nunito',sans-serif;font-size:13px;font-weight:800;
+  font-family:'Inter',-apple-system,sans-serif;font-size:13px;font-weight:800;
   letter-spacing:.03em;
   border-radius:12px 12px 0 0;
   transition:all .22s;position:relative;
@@ -75,9 +77,16 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .tt:active{transform:translateY(6px) scale(.97)}
 .tt-ico{font-size:17px;line-height:1}
 /* Активная: светлая, выступает вперёд */
-.tt.active{
+/* Вкладка «План» подсвечивается фирменным зелёным Плана,
+   остальные - бронзой подписного продукта */
+.tt.active.plan-tab{
   background:var(--bg);
   color:var(--green2);
+  box-shadow:0 -4px 14px rgba(46,125,50,.18),2px 0 8px rgba(46,125,50,.08),-2px 0 8px rgba(46,125,50,.08);
+}
+.tt.active{
+  background:var(--bg);
+  color:var(--bronze-dark);
   transform:translateY(0);
   box-shadow:0 -4px 14px rgba(0,0,0,.22),2px 0 8px rgba(0,0,0,.1),-2px 0 8px rgba(0,0,0,.1);
   border:1px solid rgba(100,70,20,.12);
@@ -102,14 +111,14 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .app-hdr-ico{font-size:36px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.3))}
 .app-hdr-texts{flex:1}
 .app-eyebrow{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:#82b8ee;margin-bottom:2px;font-weight:700}
-.app-title{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:600;color:#fff;line-height:1.25}
-.app-chan{font-family:'Cormorant Garamond',serif;font-size:17px;font-style:italic;color:rgba(255,255,255,.6);margin-top:2px}
+.app-title{font-family:'Source Serif 4',Georgia,serif;font-size:22px;font-weight:600;color:#fff;line-height:1.25}
+.app-chan{font-family:'Source Serif 4',Georgia,serif;font-size:17px;font-style:italic;color:rgba(255,255,255,.6);margin-top:2px}
 .app-sub{font-size:10px;color:rgba(255,255,255,.5);margin-top:3px}
 
 /* ── ПОИСК ── */
 .toc-sw{position:relative}
 .toc-si{position:absolute;left:11px;top:50%;transform:translateY(-50%);font-size:13px;opacity:.5;pointer-events:none}
-.toc-s{width:100%;background:rgba(255,255,255,.14);border:1.5px solid rgba(255,255,255,.22);border-radius:12px;color:#fff;font-family:'Nunito',sans-serif;font-size:13px;padding:9px 36px;outline:none;transition:border-color .2s}
+.toc-s{width:100%;background:rgba(255,255,255,.14);border:1.5px solid rgba(255,255,255,.22);border-radius:12px;color:#fff;font-family:'Inter',-apple-system,sans-serif;font-size:13px;padding:9px 36px;outline:none;transition:border-color .2s}
 .toc-s::placeholder{color:rgba(255,255,255,.4)}
 .toc-s:focus{border-color:rgba(255,255,255,.5);background:rgba(255,255,255,.2)}
 
@@ -130,7 +139,7 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .pb{display:flex;align-items:center;gap:8px;padding:12px 4px 6px;cursor:pointer}
 .pb-a{font-size:20px;color:var(--blue);font-weight:700}
 .pb-l{font-size:13px;color:var(--blue);font-weight:700}
-.pct{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600;color:var(--text2);padding:0 4px 10px}
+.pct{font-family:'Source Serif 4',Georgia,serif;font-size:20px;font-weight:600;color:var(--text2);padding:0 4px 10px}
 .post-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:12px 14px;cursor:pointer;display:block;text-decoration:none;color:inherit;transition:all .18s;margin-bottom:8px;box-shadow:0 1px 5px rgba(0,0,0,.05)}
 .post-card:active{transform:scale(.98);background:#f0f0e8}
 .ptt{font-size:13px;font-weight:700;line-height:1.4;margin-bottom:4px}
@@ -151,7 +160,7 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .stn-ico{position:absolute;top:50%;right:7px;transform:translateY(-55%) rotate(8deg);font-size:36px;opacity:.17;pointer-events:none}
 .stn-name{font-size:12px;font-weight:800;line-height:1.3;position:relative;z-index:1}
 .stn-desc{font-size:10px;opacity:.6;position:relative;z-index:1}
-.stn-trk{font-size:10px;font-style:italic;font-family:'Cormorant Garamond',serif;display:none;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;z-index:1}
+.stn-trk{font-size:10px;font-style:italic;font-family:'Source Serif 4',Georgia,serif;display:none;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;z-index:1}
 .stn.active .stn-trk{display:block}
 .pbadge{position:absolute;top:6px;left:7px;background:rgba(0,0,0,.2);color:#fff;font-size:7px;font-weight:800;padding:2px 6px;border-radius:20px;z-index:2}
 .toast{position:fixed;bottom:calc(var(--tab-h)+16px);left:50%;transform:translateX(-50%) translateY(12px);background:var(--green);color:#fff;padding:10px 20px;border-radius:50px;font-size:13px;font-weight:700;white-space:nowrap;opacity:0;transition:all .3s;z-index:300;pointer-events:none}
@@ -163,10 +172,10 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .plan-body{padding:14px 14px 4px}
 .plan-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:22px 18px;text-align:center;box-shadow:0 1px 5px rgba(0,0,0,.05);animation:fup .3s ease both}
 .plan-emoji{font-size:38px;margin-bottom:10px}
-.plan-card h3{font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:600;color:var(--text2);margin-bottom:7px;line-height:1.3}
+.plan-card h3{font-family:'Source Serif 4',Georgia,serif;font-size:19px;font-weight:600;color:var(--text2);margin-bottom:7px;line-height:1.3}
 .plan-card p{font-size:12.5px;color:var(--muted);line-height:1.65;margin-bottom:18px}
 .plan-stats{display:flex;justify-content:center;gap:22px;margin-bottom:18px}
-.plan-stat b{display:block;font-family:'Cormorant Garamond',serif;font-size:24px;font-weight:600;color:var(--green2)}
+.plan-stat b{display:block;font-family:'Source Serif 4',Georgia,serif;font-size:24px;font-weight:600;color:var(--green2)}
 .plan-stat span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
 .plan-row{display:flex;align-items:center;gap:10px;padding:10px 4px;text-align:left;border-bottom:1px solid var(--border)}
 .plan-row:last-of-type{border-bottom:none}
@@ -174,7 +183,8 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .plan-row-info{display:flex;flex-direction:column;gap:2px;min-width:0}
 .plan-row-info b{font-size:13px;color:var(--text2)}
 .plan-row-info span{font-size:11.5px;color:var(--muted)}
-.plan-btn{display:block;width:100%;padding:14px;background:linear-gradient(135deg,var(--green),var(--orange));border:none;border-radius:50px;color:#fff;font-family:'Nunito',sans-serif;font-weight:800;font-size:14px;letter-spacing:.02em;cursor:pointer;box-shadow:0 4px 16px rgba(46,125,50,.35);transition:transform .15s}
+/* Кнопка и акценты виджета Плана - фирменный зелёный Плана */
+.plan-btn{display:block;width:100%;padding:14px;background:var(--green);border:none;border-radius:50px;color:#fff;font-family:'Inter',-apple-system,sans-serif;font-weight:700;font-size:14px;letter-spacing:.02em;cursor:pointer;box-shadow:0 4px 16px rgba(62,142,82,.3);transition:transform .15s}
 .plan-btn:active{transform:scale(.96)}
 .plan-note{font-size:10.5px;color:var(--muted);margin-top:12px;line-height:1.5}
 
@@ -202,7 +212,7 @@ body{background:var(--bg);color:var(--text);font-family:'Nunito',sans-serif;min-
 .bp-bar.p{animation-play-state:paused;transform:scaleY(.3);opacity:.3}
 .bp-info{flex:1;min-width:0}
 .bp-name{font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bp-trk{font-size:11px;color:var(--green2);font-style:italic;font-family:'Cormorant Garamond',serif;min-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bp-trk{font-size:11px;color:var(--green2);font-style:italic;font-family:'Source Serif 4',Georgia,serif;min-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bp-stat{font-size:9px;color:var(--muted);letter-spacing:.06em}
 .bp-ctrl{display:flex;align-items:center;gap:6px;flex-shrink:0}
 .bp-stop{width:30px;height:30px;border-radius:50%;border:1.5px solid var(--border2);background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px}
@@ -250,7 +260,7 @@ input[type=range].vs::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
       <span class="tt-ico">📻</span>
       <span>Радио</span>
     </button>
-    <button class="tt" id="tb-plan" onclick="switchTab('plan')">
+    <button class="tt plan-tab" id="tb-plan" onclick="switchTab('plan')">
       <span class="tt-ico">📅</span>
       <span>План</span>
     </button>
