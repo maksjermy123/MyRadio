@@ -3446,6 +3446,28 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
         schedule_days = [2, 5, 8, 11, 14]
         if sent_n >= len(schedule_days) or age_days < schedule_days[sent_n]:
             continue
+        # Атомарный claim ДО отправки: инкрементируем счётчик условным PATCH
+        # (только если он всё ещё равен прочитанному значению) и проверяем,
+        # что обновилась ровно наша строка. Раньше счётчик инкрементировался
+        # ПОСЛЕ отправки — два минутных запуска cron подряд успевали оба
+        # прочитать одно значение и отправить два сообщения с интервалом в
+        # минуту. Теперь проигравший гонку увидит 0 строк и молча пропустит.
+        client2 = HTTP_CLIENT
+        claim = await client2.patch(
+            f"{SUPABASE_URL}/rest/v1/bible_accounts",
+            headers={**SB_HEADERS, "Prefer": "return=representation"},
+            params={
+                "user_id": f"eq.{uid}",
+                "onboarding_nudges": f"eq.{sent_n}",
+            },
+            json={"onboarding_nudges": sent_n + 1},
+        )
+        try:
+            claimed_rows = claim.json() if claim.status_code == 200 else []
+        except Exception:
+            claimed_rows = []
+        if not claimed_rows:
+            continue  # другой воркер уже отправил — не дублируем
         texts = {
             0: ("👋 Привет! Ты открыл «План чтения Библии», но ещё не выбрал план.\n"
                 "Выбери удобный темп — от 30 дней до года — и начни с одного короткого отрывка."),
@@ -3465,11 +3487,12 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
             ]],
         })
         if result.get("error_code") == 403:
-            continue  # заблокировал бота — не считаем попытку, больше не пишем (нет планов → нет и обычных напоминаний)
-        # Фиксируем отправку атомарно (только если счётчик не изменился с момента чтения)
-        await client.patch(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
-            headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates"},
-            params={"user_id": f"eq.{uid}", "onboarding_nudges": f"eq.{sent_n}"},
-            json={"onboarding_nudges": sent_n + 1},
-        )
+            # Заблокировал бота — откатываем счётчик, чтобы при разблокировке
+            # цепочка могла продолжиться корректно (и не тратим попытки зря:
+            # планов нет → обычные напоминания ему и так не приходят).
+            await client2.patch(
+                f"{SUPABASE_URL}/rest/v1/bible_accounts",
+                headers=SB_HEADERS,
+                params={"user_id": f"eq.{uid}", "onboarding_nudges": f"eq.{sent_n + 1}"},
+                json={"onboarding_nudges": sent_n},
+            )
