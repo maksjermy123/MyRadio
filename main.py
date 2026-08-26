@@ -42,7 +42,18 @@ app = FastAPI()
 # нагрузка), а не от обычного использования: лимиты подобраны с большим
 # запасом относительно того, сколько запросов реально делает один живой
 # пользователь.
-limiter = Limiter(key_func=get_remote_address)
+# Ключ лимита: на Render приложение стоит за reverse-proxy, поэтому
+# request.client.host для ВСЕХ запросов — это IP прокси. С get_remote_address
+# все пользователи делили бы ОДИН общий лимит и при умеренной нагрузке
+# получали бы 429 впустую. Берём реальный IP из X-Forwarded-For.
+def _real_ip(request: Request):
+    fwd = request.headers.get("x-forwarded-for")
+    # Последний элемент цепочки ставит доверенный прокси Render — его клиент
+    # подделать не может. Первый элемент присылает сам клиент и легко
+    # рандомизируется для обхода лимитов.
+    return fwd.split(",")[-1].strip() if fwd else get_remote_address(request)
+
+limiter = Limiter(key_func=_real_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -331,6 +342,10 @@ async def github_get(client: httpx.AsyncClient, filename: str):
     if file_size < 900_000 and meta.get("content"):
         try:
             data = json.loads(base64.b64decode(meta["content"]).decode())
+            # Кэшируем и быстрый путь — иначе все файлы < 900КБ (а это
+            # posts.json и links.json) ходили бы в GitHub на КАЖДОЕ чтение,
+            # и TTL-кэш не работал бы вовсе.
+            _gh_cache_put(filename, data, sha)
             return data, sha
         except Exception:
             pass
@@ -2181,7 +2196,7 @@ async def sb_upsert(payload: dict) -> tuple:
             err = r.json()
         except Exception:
             err = r.text
-        print(f"[sb_upsert] FAILED {r.status_code} for {payload.get('user_id')}/{payload.get('plan_id')}: {err}")
+        log.error(f"[sb_upsert] FAILED {r.status_code} for {payload.get('user_id')}/{payload.get('plan_id')}: {err}")
         return False, str(err)
     return True, None
 
@@ -2205,9 +2220,11 @@ async def sb_get_due(hour: int, minute: int) -> list:
     last_read_date=neq.{today}, и планы, которые НИ РАЗУ не читали
     (last_read_date IS NULL), полностью выпадали из выборки — такие
     пользователи никогда не получали ежедневное напоминание.
-    Теперь используем or=(is.null, neq.today)."""
-    from datetime import date
-    today = date.today().isoformat()
+    Теперь используем or=(is.null, neq.today).
+    "сегодня" — по МСК: сервер живёт в UTC, и date.today() с 00:00 до 03:00 МСК
+    возвращал бы ВЧЕРАШНИЙ день — прочитавшие после полуночи получали бы
+    повторное напоминание тем же утром."""
+    today = datetime.now(MSK).date().isoformat()
     client = HTTP_CLIENT
     r = await client.get(
         f"{SUPABASE_URL}/rest/v1/plan_progress",
@@ -2250,10 +2267,10 @@ async def bible_collect_stats() -> dict:
     (каждая строка plan_progress — один пользователь, upsert по user_id),
     сколько реально читали за последние 7 дней и сегодня, у скольких включены
     напоминания. «Активность» намеренно посчитана по факту чтения, а не по
-    самому наличию строки — просто открыть бота один раз не значит читать."""
-    from datetime import date, timedelta
-    today = date.today().isoformat()
-    week_ago = (date.today() - timedelta(days=7)).isoformat()
+    самому наличию строки — просто открыть бота один раз не значит читать.
+    Даты тоже по МСК (см. комментарий в sb_get_due)."""
+    today = datetime.now(MSK).date().isoformat()
+    week_ago = (datetime.now(MSK).date() - timedelta(days=7)).isoformat()
     client = HTTP_CLIENT
     total          = await _sb_count(client, {})
     active_today   = await _sb_count(client, {"last_read_date": f"eq.{today}"})
@@ -2904,11 +2921,13 @@ class StateBody(BaseModel):
 @limiter.limit("30/minute")
 async def bible_register(request: Request, body: BibleRegisterBody):
     _require_bible_user(body.user_id, body.init_data)
-    from datetime import date
     payload = {
         "user_id": body.user_id,
         "plan_id": body.plan_id,
-        "start_date": date.today().isoformat(),
+        # По МСК, а не date.today() сервера (UTC): иначе регистрация между
+        # 00:00 и 03:00 МСК давала вчерашний start_date — первое же
+        # напоминание говорило «отстаёшь на 1 день» только что зарегистрировавшемуся.
+        "start_date": datetime.now(MSK).date().isoformat(),
         "notify_hour_msk": body.notify_hour_msk,
         "notify_minute_msk": body.notify_minute_msk,
         "notify_on": body.notify_on,
@@ -2917,6 +2936,15 @@ async def bible_register(request: Request, body: BibleRegisterBody):
     }
     if body.title:
         payload["title"] = body.title
+    # КРИТИЧНО: merge-duplicates upsert перезаписал бы ВСЕ поля. Если клиент
+    # повторно вызывает register для уже зарегистрированного плана (reconnect,
+    # гонка двух вкладок), прогресс пользователя молча обнулился бы.
+    # Для существующего плана обновляем только настройки уведомлений.
+    existing = await sb_get_one(body.user_id, body.plan_id)
+    if existing:
+        payload = {k: v for k, v in payload.items()
+                   if k in ("user_id", "plan_id", "title",
+                            "notify_hour_msk", "notify_minute_msk", "notify_on")}
     ok, err = await sb_upsert(payload)
     if not ok:
         return {"ok": False, "error": err}
@@ -3226,6 +3254,11 @@ async def bible_webhook(request: Request):
     message = data.get("message", {})
     if not message:
         return {"ok": True}
+    # Только личные сообщения: если бота добавят в группу, без этого фильтра
+    # бот отвечал бы приветствием на КАЖДОЕ сообщение группы и создавал
+    # мусорные строки в bible_accounts с chat_id группы.
+    if (message.get("chat") or {}).get("type") != "private":
+        return {"ok": True}
     chat_id = message.get("chat", {}).get("id")
     if not chat_id:
         return {"ok": True}
@@ -3446,6 +3479,10 @@ async def bible_send_reminders():
     users = await sb_get_due(now_msk.hour, now_msk.minute)
     blocked_this_run = set()  # не бить по Supabase повторно, если у юзера несколько планов на одну минуту
     for u in users:
+      # Сбой на ОДНОМ пользователе (таймаут Supabase, битая строка) не должен
+      # прерывать рассылку всем остальным — иначе вся минута напоминаний
+      # теряется целиком.
+      try:
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
             continue
@@ -3490,6 +3527,8 @@ async def bible_send_reminders():
         if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
             blocked_this_run.add(u["user_id"])
             await _disable_reminders_for_blocked_user(u["user_id"])
+      except Exception as e:
+        log.error(f"reminder failed for {u.get('user_id')}/{u.get('plan_id')}: {e}")
     # Онбординг-напоминания тем, кто нажал «Старт», но так и не выбрал план.
     await bible_send_onboarding_nudges(now_msk)
 
@@ -3512,6 +3551,13 @@ def _plan_age_days(u: dict) -> int:
 # сам по себе не случится. Мягкая цепочка: день 2, затем каждые 3 дня,
 # максимум 5 сообщений — ненавязчиво, но последовательно ведём к действию.
 ONBOARDING_MAX_NUDGES = 5
+
+def _as_aware(dt: datetime) -> datetime:
+    """Supabase может вернуть timestamp БЕЗ таймзоны (если колонка не
+    timestamptz) — наивный datetime при сравнении с aware now_msk бросает
+    TypeError ВНЕ try-блока и роняет весь минутный cron: напоминания
+    перестают уходить ВСЕМ. Нормализуем к aware (UTC по умолчанию)."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 async def bible_send_onboarding_nudges(now_msk) -> None:
     client = HTTP_CLIENT
@@ -3552,7 +3598,7 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
             continue
         started_raw = a.get("started_at")
         try:
-            started = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
+            started = _as_aware(datetime.fromisoformat(started_raw.replace("Z", "+00:00")))
         except Exception:
             continue
         # Интервал считается от ПОСЛЕДНЕГО напоминания (onboarding_last_at),
@@ -3567,7 +3613,7 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
                 continue
         elif last_raw:
             try:
-                last_sent = datetime.fromisoformat(last_raw.replace("Z", "+00:00"))
+                last_sent = _as_aware(datetime.fromisoformat(last_raw.replace("Z", "+00:00")))
             except Exception:
                 continue
             if now_msk < last_sent + timedelta(days=3):
