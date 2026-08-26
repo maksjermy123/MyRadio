@@ -264,6 +264,11 @@
   }
 
   function openLink(url) {
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (!['https:', 'http:'].includes(parsed.protocol)) return;
+      url = parsed.href;
+    } catch (e) { return; }
     haptic();
     if (tg?.openLink) tg.openLink(url);
     else window.open(url, "_blank");
@@ -373,6 +378,10 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  function jsArg(s) {
+    return JSON.stringify(String(s == null ? '' : s)).replace(/'/g, '&#39;');
+  }
+
   function verseCount(ref) {
     const m = ref.match(/(\d+)-(\d+)$/);
     if (!m) return '';
@@ -461,8 +470,8 @@
     if (data.humor) {
       html += `<div class="humor-card">
         <div class="humor-emoji">😄</div>
-        <div class="humor-quote">${data.humor_text.replace('«','').replace('»','')}</div>
-        <div class="humor-author">— ${data.humor_author}</div>
+        <div class="humor-quote">${esc(data.humor_text).replace('«','').replace('»','')}</div>
+        <div class="humor-author">— ${esc(data.humor_author)}</div>
       </div>`;
       html += `<div class="bottom-actions">
         <button class="bottom-btn primary" onclick="openPostInChannel()">↗ Открыть пост в канале</button>
@@ -475,7 +484,7 @@
     if (data.topics?.length) {
       html += `<div class="card">
         <div class="card-header"><span>🏷️</span><h2>Темы</h2></div>
-        <div class="topics">${data.topics.map(t => `<span class="topic-chip">${t}</span>`).join("")}</div>
+        <div class="topics">${data.topics.map(t => `<span class="topic-chip">${esc(t)}</span>`).join("")}</div>
       </div>`;
     }
 
@@ -504,20 +513,20 @@
         const refStr = b.ref || '';
         const vc = verseCount(refStr);
         const btns = Object.entries(translations).map(([name, url]) =>
-          `<button class="trans-btn" onclick="openLink('${url}')">${name}</button>`
+          `<button class="trans-btn" onclick='openLink(${jsArg(url)})'>${esc(name)}</button>`
         ).join("");
         return `
         <div class="bible-item">
           ${roleLabel ? `<div class="bible-role">${roleLabel}</div>` : ""}
           <div class="bible-ref-row">
-            <span class="bible-ref">${refStr}</span>
-            ${vc ? `<span class="bible-verse-count"> · ${vc}</span>` : ""}
+            <span class="bible-ref">${esc(refStr)}</span>
+              ${vc ? `<span class="bible-verse-count"> · ${esc(vc)}</span>` : ""}
           </div>
-          <div class="bible-theme">${b.theme || ""}</div>
+            <div class="bible-theme">${esc(b.theme)}</div>
           ${b.text_syn ? `
             <div class="bible-text-wrap">
-              <div class="bible-text" id="${safeId}" data-ref="${refStr}">${b.text_syn}</div>
-              <button class="expand-btn" onclick="toggleText(this,'${safeId}','${refStr}')">
+                <div class="bible-text" id="${esc(safeId)}" data-ref="${esc(refStr)}">${esc(b.text_syn)}</div>
+                <button class="expand-btn" onclick='toggleText(this,${jsArg(safeId)},${jsArg(refStr)})'>
                 <span>Читать полностью</span> ↓
               </button>
             </div>` : ""}
@@ -535,10 +544,10 @@
         const safeId = `tq${i}`;
         return `
         <div class="theology-item">
-          <div class="theology-author">${q.author}</div>
-          <div class="theology-title">${q.title || ""}</div>
-          <div class="theology-text" id="${safeId}">${q.text}</div>
-          <button class="expand-btn" onclick="toggleText(this,'${safeId}','tq_${i}')">
+          <div class="theology-author">${esc(q.author)}</div>
+          <div class="theology-title">${esc(q.title)}</div>
+          <div class="theology-text" id="${esc(safeId)}">${esc(q.text)}</div>
+          <button class="expand-btn" onclick='toggleText(this,${jsArg(safeId)},${jsArg(`tq_${i}`)})'>
             <span>Читать полностью</span> ↓
           </button>
         </div>`;
@@ -552,7 +561,7 @@
     if (data.reflection) {
       html += `<div class="card">
         <div class="card-header"><span>🙏</span><h2>Вопрос для размышления</h2></div>
-        <div class="reflection-body">${data.reflection}</div>
+        <div class="reflection-body">${esc(data.reflection)}</div>
       </div>`;
     }
 
