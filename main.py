@@ -3565,14 +3565,22 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
         if sent_n == 0:
             if now_msk < first_allowed:
                 continue
-        else:
-            if not last_raw:
-                continue  # счётчик есть, а метки нет — не рискуем дублем
+        elif last_raw:
             try:
                 last_sent = datetime.fromisoformat(last_raw.replace("Z", "+00:00"))
             except Exception:
                 continue
             if now_msk < last_sent + timedelta(days=3):
+                continue
+        else:
+            # Счётчик > 0, но метки нет: строка была инкрементирована СТАРОЙ
+            # версией кода (она писала только счётчик). Без этого fallback
+            # такие пользователи застревали навсегда: sent_n>0 требует метки,
+            # которой никогда не появится. Откатываемся к расчёту от started_at:
+            # первое "настоящее" напоминание придёт не раньше чем через 3 дня
+            # после старта — безопасно против дублей (старая версия слала их
+            # в первые минуты, значит 3 дня уже точно прошли).
+            if now_msk < started + timedelta(days=3):
                 continue
         # Атомарный claim ДО отправки: инкрементируем счётчик условным PATCH
         # (только если он всё ещё равен прочитанному значению) и проверяем,
