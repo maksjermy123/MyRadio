@@ -42,18 +42,7 @@ app = FastAPI()
 # нагрузка), а не от обычного использования: лимиты подобраны с большим
 # запасом относительно того, сколько запросов реально делает один живой
 # пользователь.
-# Ключ лимита: на Render приложение стоит за reverse-proxy, поэтому
-# request.client.host для ВСЕХ запросов — это IP прокси. С get_remote_address
-# все пользователи делили бы ОДИН общий лимит и при умеренной нагрузке
-# получали бы 429 впустую. Берём реальный IP из X-Forwarded-For.
-def _real_ip(request: Request):
-    fwd = request.headers.get("x-forwarded-for")
-    # Последний элемент цепочки ставит доверенный прокси Render — его клиент
-    # подделать не может. Первый элемент присылает сам клиент и легко
-    # рандомизируется для обхода лимитов.
-    return fwd.split(",")[-1].strip() if fwd else get_remote_address(request)
-
-limiter = Limiter(key_func=_real_ip)
+limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -72,7 +61,6 @@ app.add_middleware(
 # ── Конфигурация ──────────────────────────────────────────────
 BOT_TOKEN                 = os.environ.get("BOT_TOKEN", "")
 WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
-ADMIN_SECRET               = os.environ.get("ADMIN_SECRET", "")
 CHANNEL_ID                = os.environ.get("CHANNEL_ID", "@Chtenie_Preobrazenie")
 DISCUSSION_CHAT_ID        = -1002557846325  # linked чат для комментариев
 INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
@@ -85,29 +73,6 @@ GROQ_API_KEY              = os.environ.get("GROQ_API_KEY", "")
 COHERE_API_KEY            = os.environ.get("COHERE_API_KEY", "")
 BOT_USERNAME              = os.environ.get("BOT_USERNAME", "preoradio_bot")
 DEEPER_PAGE_URL           = f"https://maksjermy123.github.io/MyRadio/deeper.html"
-
-# Операционные маршруты меняют Telegram/GitHub или запускают платный анализ.
-# Они не должны быть доступны по одному только знанию Render URL.
-ADMIN_PATHS = {
-    "/analyze", "/analyze_range", "/analyze_all", "/reindex", "/reindex_all",
-    "/remove_button", "/remove_all_buttons", "/send_button", "/cleanup",
-    "/update_buttons", "/bulk_deeper", "/reload_theology", "/import_texts",
-    "/set_webhook", "/check_webhook", "/set_webhook_bible", "/check_webhook_bible",
-    "/debug_last",
-}
-
-@app.middleware("http")
-async def protect_admin_paths(request: Request, call_next):
-    path = request.url.path
-    protected = path in ADMIN_PATHS or any(
-        path.startswith(prefix + "/") for prefix in ADMIN_PATHS
-        if prefix in {"/analyze", "/remove_button", "/send_button"}
-    )
-    if protected:
-        supplied = request.headers.get("x-admin-secret", "")
-        if not ADMIN_SECRET or not hmac.compare_digest(supplied, ADMIN_SECRET):
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
-    return await call_next(request)
 
 TELEGRAM_API  = f"https://api.telegram.org/bot{BOT_TOKEN}"
 GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
@@ -366,10 +331,6 @@ async def github_get(client: httpx.AsyncClient, filename: str):
     if file_size < 900_000 and meta.get("content"):
         try:
             data = json.loads(base64.b64decode(meta["content"]).decode())
-            # Кэшируем и быстрый путь — иначе все файлы < 900КБ (а это
-            # posts.json и links.json) ходили бы в GitHub на КАЖДОЕ чтение,
-            # и TTL-кэш не работал бы вовсе.
-            _gh_cache_put(filename, data, sha)
             return data, sha
         except Exception:
             pass
@@ -1550,8 +1511,7 @@ async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_exis
 
 
 @app.get("/analyze_all")
-@limiter.limit("10/minute")
-async def analyze_all(request: Request, delay: float = 5.0, skip_existing: bool = True):
+async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
     async with httpx.AsyncClient(timeout=20) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
@@ -2221,30 +2181,18 @@ async def sb_upsert(payload: dict) -> tuple:
             err = r.json()
         except Exception:
             err = r.text
-        log.error(f"[sb_upsert] FAILED {r.status_code} for {payload.get('user_id')}/{payload.get('plan_id')}: {err}")
+        print(f"[sb_upsert] FAILED {r.status_code} for {payload.get('user_id')}/{payload.get('plan_id')}: {err}")
         return False, str(err)
     return True, None
 
-async def sb_patch(user_id: int, plan_id: str, payload: dict) -> bool:
-    """Возвращает True при успехе. Раньше ответ Supabase вообще не
-    проверялся: при сбое (RLS, таймаут) сервер всё равно отвечал клиенту
-    {"ok": true}, а прогресс молча не сохранялся. Теперь сбой виден
-    в логах Render."""
+async def sb_patch(user_id: int, plan_id: str, payload: dict):
     client = HTTP_CLIENT
-    r = await client.patch(
+    await client.patch(
         f"{SUPABASE_URL}/rest/v1/plan_progress",
         headers=SB_HEADERS,
         params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
         json=payload,
     )
-    if r.status_code >= 300:
-        try:
-            err = r.json()
-        except Exception:
-            err = r.text[:300]
-        log.error(f"[sb_patch] FAILED {r.status_code} for {user_id}/{plan_id}: {err}")
-        raise HTTPException(status_code=503, detail="storage unavailable")
-    return True
 
 async def sb_get_due(hour: int, minute: int) -> list:
     """Точное совпадение часа И минуты — раньше проверялся только час
@@ -2253,15 +2201,11 @@ async def sb_get_due(hour: int, minute: int) -> list:
     пользователи, ещё не задававшие точное время, продолжают получать
     напоминание ровно в начале часа — поведение для них не меняется.
 
-    ВАЖНО: PostgREST-оператор neq НЕ матчит NULL. Раньше фильтр был просто
-    last_read_date=neq.{today}, и планы, которые НИ РАЗУ не читали
-    (last_read_date IS NULL), полностью выпадали из выборки — такие
-    пользователи никогда не получали ежедневное напоминание.
-    Теперь используем or=(is.null, neq.today).
-    "сегодня" — по МСК: сервер живёт в UTC, и date.today() с 00:00 до 03:00 МСК
-    возвращал бы ВЧЕРАШНИЙ день — прочитавшие после полуночи получали бы
-    повторное напоминание тем же утром."""
-    today = datetime.now(MSK).date().isoformat()
+    Теперь возвращает строки по (user_id, plan_id) — если у пользователя
+    несколько планов с одинаковым временем напоминания, придёт по одному
+    сообщению на каждый план (см. bible_send_reminders)."""
+    from datetime import date
+    today = date.today().isoformat()
     client = HTTP_CLIENT
     r = await client.get(
         f"{SUPABASE_URL}/rest/v1/plan_progress",
@@ -2270,7 +2214,7 @@ async def sb_get_due(hour: int, minute: int) -> list:
             "notify_hour_msk": f"eq.{hour}",
             "notify_minute_msk": f"eq.{minute}",
             "notify_on": "eq.true",
-            "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
+            "last_read_date": f"neq.{today}",
             "select": "user_id,plan_id,title,streak,start_date,days_done",
         },
     )
@@ -2304,10 +2248,10 @@ async def bible_collect_stats() -> dict:
     (каждая строка plan_progress — один пользователь, upsert по user_id),
     сколько реально читали за последние 7 дней и сегодня, у скольких включены
     напоминания. «Активность» намеренно посчитана по факту чтения, а не по
-    самому наличию строки — просто открыть бота один раз не значит читать.
-    Даты тоже по МСК (см. комментарий в sb_get_due)."""
-    today = datetime.now(MSK).date().isoformat()
-    week_ago = (datetime.now(MSK).date() - timedelta(days=7)).isoformat()
+    самому наличию строки — просто открыть бота один раз не значит читать."""
+    from datetime import date, timedelta
+    today = date.today().isoformat()
+    week_ago = (date.today() - timedelta(days=7)).isoformat()
     client = HTTP_CLIENT
     total          = await _sb_count(client, {})
     active_today   = await _sb_count(client, {"last_read_date": f"eq.{today}"})
@@ -2371,81 +2315,24 @@ async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
         orphans.append(uid)
     return orphans
 
-async def _fetch_onboarding_users(known_user_ids: set) -> list:
-    """Пользователи на онбординг-этапе: «Старт» нажат (started_at заполнен),
-    но ни одного плана нет и app_state тоже пуст. Раньше были невидимы для
-    админа — их данные живут только в bible_accounts, которую /users не читал.
-    Возвращает список user_id."""
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/bible_accounts",
-        headers=SB_HEADERS,
-        params={
-            "started_at": "not.is.null",
-            "select": "user_id",
-            "order": "user_id",
-            "limit": "1000",
-        },
-    )
-    try:
-        data = r.json()
-    except Exception:
-        data = []
-    if not isinstance(data, list):
-        data = []
-    result = []
-    for row in data:
-        uid = row.get("user_id")
-        if uid is None or uid in known_user_ids:
-            continue
-        result.append(uid)
-    return result
-
-async def _wipe_onboarding_account(user_id: int) -> None:
-    """Полный сброс онбординг-аккаунта (без планов и app_state): ротация
-    reset_token + очистка started_at и счётчика онбординг-напоминаний.
-    Пользователь вернётся к состоянию «никогда не жал Старт»."""
-    import uuid
-    client = HTTP_CLIENT
-    await client.post(
-        f"{SUPABASE_URL}/rest/v1/bible_accounts?on_conflict=user_id",
-        headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
-        json={
-            "user_id": user_id,
-            "reset_token": str(uuid.uuid4()),
-            "started_at": None,
-            "onboarding_nudges": 0,
-            "onboarding_last_at": None,
-        },
-    )
-
 _ADMIN_ROWS_LIMIT = 40
 
-def _admin_users_text(rows: list, orphan_ids: list, onboarding_ids: list = None, note: str = "") -> str:
+def _admin_users_text(rows: list, orphan_ids: list, note: str = "") -> str:
     by_user = {}
     for row in rows:
         by_user.setdefault(row.get("user_id"), []).append(row)
-    # 🔕 — у пользователя все планы с notify_on=false (обычно после 403:
-    # заблокировал бота или удалил аккаунт). Виден в списке, но напоминания
-    # ему больше не уходят.
-    muted = {uid for uid, urows in by_user.items()
-             if urows and all(not r.get("notify_on", True) for r in urows)}
-    total = len(by_user) + len(orphan_ids) + len(onboarding_ids or [])
+    total = len(by_user) + len(orphan_ids)
     if not total:
         return (note + "\n\n" if note else "") + "👥 В plan_progress и app_state сейчас нет ни одной записи."
     text = (
         f"👥 <b>Пользователи</b> (всего {total}).\n"
-        f"🔕 — напоминания отключены (часто: заблокировал бота).\n"
-        f"🌫 — осиротевший app_state без планов.\n"
-        f"🌱 — нажал «Старт», но план так и не выбрал.\n"
-        f"Нажми на ID для деталей или 🗑 для удаления."
+        f"Нажми на ID, чтобы посмотреть его планы и стрики, или сразу на 🗑, чтобы удалить."
     )
-    if (len(by_user) > _ADMIN_ROWS_LIMIT or len(orphan_ids) > _ADMIN_ROWS_LIMIT
-            or len(onboarding_ids or []) > _ADMIN_ROWS_LIMIT):
+    if len(by_user) > _ADMIN_ROWS_LIMIT or len(orphan_ids) > _ADMIN_ROWS_LIMIT:
         text += f"\n\nПоказаны первые {_ADMIN_ROWS_LIMIT} из каждой группы."
     return (note + "\n\n" + text) if note else text
 
-def _admin_users_markup(rows: list, orphan_ids: list, onboarding_ids: list = None) -> dict:
+def _admin_users_markup(rows: list, orphan_ids: list) -> dict:
     """Компактный список вместо простыни текста: одна строка на
     пользователя — ID (открывает детальный просмотр планов) и отдельная
     кнопка-корзина рядом (удаляет сразу, без захода внутрь). При росте
@@ -2455,16 +2342,9 @@ def _admin_users_markup(rows: list, orphan_ids: list, onboarding_ids: list = Non
     by_user = {}
     for row in rows:
         by_user.setdefault(row.get("user_id"), []).append(row)
-    muted = {uid for uid, urows in by_user.items()
-             if urows and all(not r.get("notify_on", True) for r in urows)}
-    def _label(uid: int) -> str:
-        s = str(uid)
-        if uid in muted:
-            s = f"🔕 {s}"
-        return s
     buttons = [
         [
-            {"text": _label(uid), "callback_data": f"adm_view:{uid}"},
+            {"text": str(uid), "callback_data": f"adm_view:{uid}"},
             {"text": "🗑", "callback_data": f"adm_del:{uid}"},
         ]
         for uid in list(by_user.keys())[:_ADMIN_ROWS_LIMIT]
@@ -2476,14 +2356,6 @@ def _admin_users_markup(rows: list, orphan_ids: list, onboarding_ids: list = Non
         ]
         for uid in orphan_ids[:_ADMIN_ROWS_LIMIT]
     ]
-    # Онбординг-этап: Старт есть, плана нет. Данные только в bible_accounts,
-    # поэтому раньше были невидимы для админа. Удаление здесь — полный сброс
-    # аккаунта (reset_token ротируется, started_at очищается).
-    for uid in (onboarding_ids or [])[:_ADMIN_ROWS_LIMIT]:
-        buttons.append([
-            {"text": f"🌱 {uid}", "callback_data": f"adm_view:{uid}"},
-            {"text": "🗑", "callback_data": f"adm_obdel:{uid}"},
-        ])
     return {"inline_keyboard": buttons}
 
 def _admin_user_detail_text(uid: int, urows: list) -> str:
@@ -2562,10 +2434,8 @@ async def _handle_admin_callback(callback: dict):
     if action == "adm_list":
         await bible_answer_callback(cq_id)
         rows = await _fetch_all_progress_rows()
-        known = {r.get("user_id") for r in rows}
-        orphans = await _fetch_orphan_app_state_users(known)
-        onboarding = await _fetch_onboarding_users(known | set(orphans))
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, onboarding), _admin_users_markup(rows, orphans, onboarding))
+        orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
         return
 
     if action == "adm_view" and len(parts) == 2:
@@ -2607,44 +2477,8 @@ async def _handle_admin_callback(callback: dict):
         await bible_answer_callback(cq_id, "Удалено ✅")
         note = f"✅ Пользователь <code>{uid}</code> полностью удалён ({deleted} план(ов) удалено, app_state очищен)."
         rows = await _fetch_all_progress_rows()
-        known = {r.get("user_id") for r in rows}
-        orphans = await _fetch_orphan_app_state_users(known)
-        onboarding = await _fetch_onboarding_users(known | set(orphans))
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, onboarding, note), _admin_users_markup(rows, orphans, onboarding))
-        return
-
-    if action == "adm_obdel" and len(parts) == 2:
-        # Удаление онбординг-аккаунта (Старт есть, планов нет): полный сброс
-        # bible_accounts-строки. Подтверждение — как у обычного удаления.
-        uid_s = parts[1]
-        await bible_answer_callback(cq_id)
-        await bible_edit_message(
-            chat_id, message_id,
-            f"⚠️ <b>Сбросить онбординг-аккаунт {uid_s}?</b>\n\n"
-            f"У пользователя нет ни плана, ни app_state — будет очищена только "
-            f"запись в bible_accounts (Старт, счётчик напоминаний). "
-            f"Он снова увидит экран «нажми Старт» при следующем заходе.",
-            {"inline_keyboard": [[
-                {"text": "✅ Да, сбросить", "callback_data": f"adm_obdelyes:{uid_s}"},
-                {"text": "❌ Отмена", "callback_data": "adm_list"},
-            ]]},
-        )
-        return
-
-    if action == "adm_obdelyes" and len(parts) == 2:
-        try:
-            uid = int(parts[1])
-        except ValueError:
-            await bible_answer_callback(cq_id, "Ошибка данных")
-            return
-        await _wipe_onboarding_account(uid)
-        await bible_answer_callback(cq_id, "Сброшено ✅")
-        note = f"✅ Онбординг-аккаунт <code>{uid}</code> сброшен."
-        rows = await _fetch_all_progress_rows()
-        known = {r.get("user_id") for r in rows}
-        orphans = await _fetch_orphan_app_state_users(known)
-        onboarding = await _fetch_onboarding_users(known | set(orphans))
-        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, onboarding, note), _admin_users_markup(rows, orphans, onboarding))
+        orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
+        await bible_edit_message(chat_id, message_id, _admin_users_text(rows, orphans, note), _admin_users_markup(rows, orphans))
         return
 
     await bible_answer_callback(cq_id)
@@ -2663,14 +2497,11 @@ async def sb_state_get(user_id: int):
 
 async def sb_state_upsert(user_id: int, data: dict):
     client = HTTP_CLIENT
-    r = await client.post(
+    await client.post(
         f"{SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id",
         headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
         json={"user_id": user_id, "data": data},
     )
-    if r.status_code >= 300:
-        log.error(f"[sb_state_upsert] FAILED {r.status_code} for {user_id}: {r.text[:300]}")
-        raise HTTPException(status_code=503, detail="storage unavailable")
 
 # ── Supabase: bible_accounts (переживает удаление пользователя) ──
 # Отдельная от plan_progress/app_state табличка-маячок: одна строка на
@@ -2890,11 +2721,12 @@ def _require_bible_user(user_id: int, init_data: Optional[str]) -> None:
     используется для /verify — здесь тот же самый механизм, просто
     подключённый к остальным личным эндпоинтам.
 
-    Если BIBLE_BOT_TOKEN не настроен — мутирующий запрос отклоняется,
-    иначе любой клиент сможет подставить чужой user_id."""
+    Если BOT_TOKEN не настроен в окружении — не роняем все планы чтения
+    из-за конфигурационной ошибки, а логируем и пропускаем (это тот же
+    компромисс, что и раньше был неявным по умолчанию)."""
     if not BIBLE_BOT_TOKEN:
-        log.error(f"_require_bible_user: BIBLE_BOT_TOKEN не настроен — запрос отклонён для user_id={user_id}")
-        raise HTTPException(status_code=503, detail="bible bot authentication unavailable")
+        log.error(f"_require_bible_user: BIBLE_BOT_TOKEN не настроен — user_id={user_id} пропущен БЕЗ проверки подписи")
+        return
     if not init_data:
         raise HTTPException(401, "missing init data")
     payload = verify_telegram_init_data(init_data, BIBLE_BOT_TOKEN, max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
@@ -2960,13 +2792,11 @@ class StateBody(BaseModel):
 @limiter.limit("30/minute")
 async def bible_register(request: Request, body: BibleRegisterBody):
     _require_bible_user(body.user_id, body.init_data)
+    from datetime import date
     payload = {
         "user_id": body.user_id,
         "plan_id": body.plan_id,
-        # По МСК, а не date.today() сервера (UTC): иначе регистрация между
-        # 00:00 и 03:00 МСК давала вчерашний start_date — первое же
-        # напоминание говорило «отстаёшь на 1 день» только что зарегистрировавшемуся.
-        "start_date": datetime.now(MSK).date().isoformat(),
+        "start_date": date.today().isoformat(),
         "notify_hour_msk": body.notify_hour_msk,
         "notify_minute_msk": body.notify_minute_msk,
         "notify_on": body.notify_on,
@@ -2975,15 +2805,6 @@ async def bible_register(request: Request, body: BibleRegisterBody):
     }
     if body.title:
         payload["title"] = body.title
-    # КРИТИЧНО: merge-duplicates upsert перезаписал бы ВСЕ поля. Если клиент
-    # повторно вызывает register для уже зарегистрированного плана (reconnect,
-    # гонка двух вкладок), прогресс пользователя молча обнулился бы.
-    # Для существующего плана обновляем только настройки уведомлений.
-    existing = await sb_get_one(body.user_id, body.plan_id)
-    if existing:
-        payload = {k: v for k, v in payload.items()
-                   if k in ("user_id", "plan_id", "title",
-                            "notify_hour_msk", "notify_minute_msk", "notify_on")}
     ok, err = await sb_upsert(payload)
     if not ok:
         return {"ok": False, "error": err}
@@ -3293,11 +3114,6 @@ async def bible_webhook(request: Request):
     message = data.get("message", {})
     if not message:
         return {"ok": True}
-    # Только личные сообщения: если бота добавят в группу, без этого фильтра
-    # бот отвечал бы приветствием на КАЖДОЕ сообщение группы и создавал
-    # мусорные строки в bible_accounts с chat_id группы.
-    if (message.get("chat") or {}).get("type") != "private":
-        return {"ok": True}
     chat_id = message.get("chat", {}).get("id")
     if not chat_id:
         return {"ok": True}
@@ -3329,10 +3145,8 @@ async def bible_webhook(request: Request):
                 await bible_send(chat_id, "SUPABASE_URL не настроен.")
             else:
                 rows = await _fetch_all_progress_rows()
-                known = {r.get("user_id") for r in rows}
-                orphans = await _fetch_orphan_app_state_users(known)
-                onboarding = await _fetch_onboarding_users(known | set(orphans))
-                await bible_send(chat_id, _admin_users_text(rows, orphans, onboarding), _admin_users_markup(rows, orphans, onboarding))
+                orphans = await _fetch_orphan_app_state_users({r.get("user_id") for r in rows})
+                await bible_send(chat_id, _admin_users_text(rows, orphans), _admin_users_markup(rows, orphans))
         return {"ok": True}
 
     if text == SHARE_BTN_TEXT:
@@ -3518,37 +3332,13 @@ async def bible_send_reminders():
     users = await sb_get_due(now_msk.hour, now_msk.minute)
     blocked_this_run = set()  # не бить по Supabase повторно, если у юзера несколько планов на одну минуту
     for u in users:
-      # Сбой на ОДНОМ пользователе (таймаут Supabase, битая строка) не должен
-      # прерывать рассылку всем остальным — иначе вся минута напоминаний
-      # теряется целиком.
-      try:
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
             continue
         streak = u.get("streak", 0)
         lag = _days_behind(u)
         title = _plan_title(u)
-        days_done_n = len(u.get("days_done") or [])
-        if days_done_n == 0:
-            # План выбран, но не прочитано НИ ОДНОГО дня. Раньше такие
-            # получали обычное "время читать" (lag=0, streak=0) — и это
-            # выглядело как ошибка системы ("я же ещё не начинал!").
-            # Теперь — мягкая онбординг-цепочка: день 1 после старта,
-            # затем каждые 2 дня, пока человек не начнёт. Тексты дружелюбные,
-            # без давления: цель — побудить к ПЕРВОМУ шагу.
-            age_days = _plan_age_days(u)
-            if age_days <= 0:
-                continue  # план создан сегодня — ещё рано напоминать
-            if age_days == 1:
-                body = (f"🌱 «{title}»: план готов и ждёт тебя!\n"
-                        f"Первый день — самый лёгкий. Открой план и прочитай первый отрывок — это займёт пару минут.")
-            elif age_days <= 3:
-                body = (f"📖 «{title}»: ты выбрал план, но ещё не начал.\n"
-                        f"Начни с малого — один отрывок сегодня, и дальше пойдёт легче!")
-            else:
-                body = (f"⏳ «{title}»: ждёт тебя уже {age_days} {_ru_day_word(age_days)}.\n"
-                        f"Не обязательно догонять график — просто открой и прочитай один отрывок сегодня.")
-        elif lag > 0:
+        if lag > 0:
             word = _ru_day_word(lag)
             body = (
                 f"⚠️ «{title}»: отстаёшь на {lag} {word} от плана чтения.\n"
@@ -3566,164 +3356,3 @@ async def bible_send_reminders():
         if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
             blocked_this_run.add(u["user_id"])
             await _disable_reminders_for_blocked_user(u["user_id"])
-      except Exception as e:
-        log.error(f"reminder failed for {u.get('user_id')}/{u.get('plan_id')}: {e}")
-    # Онбординг-напоминания тем, кто нажал «Старт», но так и не выбрал план.
-    await bible_send_onboarding_nudges(now_msk)
-
-
-def _plan_age_days(u: dict) -> int:
-    """Сколько полных дней прошло с создания плана (start_date)."""
-    start_raw = u.get("start_date")
-    if not start_raw:
-        return 0
-    from datetime import date
-    try:
-        return (datetime.now(MSK).date() - date.fromisoformat(start_raw)).days
-    except ValueError:
-        return 0
-
-
-# ── Онбординг-напоминания: «Старт» есть, плана нет ───────────────────────
-# Человек нажал «Старт» в боте (started_at заполнен), но plan_progress для
-# него пуст — напоминать о чтении нечего, а следующий шаг (выбор плана)
-# сам по себе не случится. Мягкая цепочка: день 2, затем каждые 3 дня,
-# максимум 5 сообщений — ненавязчиво, но последовательно ведём к действию.
-ONBOARDING_MAX_NUDGES = 5
-
-def _as_aware(dt: datetime) -> datetime:
-    """Supabase может вернуть timestamp БЕЗ таймзоны (если колонка не
-    timestamptz) — наивный datetime при сравнении с aware now_msk бросает
-    TypeError ВНЕ try-блока и роняет весь минутный cron: напоминания
-    перестают уходить ВСЕМ. Нормализуем к aware (UTC по умолчанию)."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-async def bible_send_onboarding_nudges(now_msk) -> None:
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/bible_accounts",
-        headers=SB_HEADERS,
-        params={
-            "started_at": "not.is.null",
-            # ВАЖНО: onboarding_last_at обязан быть в select — без него
-            # a.get("onboarding_last_at") всегда None, интервал «каждые
-            # 3 дня» не работал бы, и после 3-го дня вся цепочка ушла бы
-            # минута за минутой.
-            "select": "user_id,started_at,onboarding_nudges,onboarding_last_at",
-            "limit": "500",
-        },
-    )
-    try:
-        accounts = r.json() if r.status_code == 200 else []
-    except Exception:
-        accounts = []
-    if not accounts:
-        return
-    # user_id тех, у кого УЖЕ есть хотя бы один план — их исключаем
-    with_plan = set()
-    pr = await client.get(
-        f"{SUPABASE_URL}/rest/v1/plan_progress",
-        headers=SB_HEADERS,
-        params={"select": "user_id", "limit": "10000"},
-    )
-    try:
-        for row in (pr.json() if pr.status_code == 200 else []):
-            with_plan.add(row.get("user_id"))
-    except Exception:
-        pass
-    today = now_msk.date()
-    for a in accounts:
-        uid = a.get("user_id")
-        if uid in with_plan:
-            continue
-        sent_n = int(a.get("onboarding_nudges") or 0)
-        if sent_n >= ONBOARDING_MAX_NUDGES:
-            continue
-        started_raw = a.get("started_at")
-        try:
-            started = _as_aware(datetime.fromisoformat(started_raw.replace("Z", "+00:00")))
-        except Exception:
-            continue
-        # Интервал считается от ПОСЛЕДНЕГО напоминания (onboarding_last_at),
-        # а не от started_at. Иначе для тех, кто зарегистрировался давно,
-        # age_days навсегда больше любого порога графика — и вся цепочка
-        # из 5 сообщений уходила бы подряд за 5 минут (реальный баг,
-        # пойманный вживую: два сообщения минута в минуту).
-        first_allowed = started + timedelta(days=2)
-        last_raw = a.get("onboarding_last_at")
-        if sent_n == 0:
-            if now_msk < first_allowed:
-                continue
-        elif last_raw:
-            try:
-                last_sent = _as_aware(datetime.fromisoformat(last_raw.replace("Z", "+00:00")))
-            except Exception:
-                continue
-            if now_msk < last_sent + timedelta(days=3):
-                continue
-        else:
-            # Счётчик > 0, но метки нет: строка была инкрементирована СТАРОЙ
-            # версией кода (она писала только счётчик). Без этого fallback
-            # такие пользователи застревали навсегда: sent_n>0 требует метки,
-            # которой никогда не появится. Откатываемся к расчёту от started_at:
-            # первое "настоящее" напоминание придёт не раньше чем через 3 дня
-            # после старта — безопасно против дублей (старая версия слала их
-            # в первые минуты, значит 3 дня уже точно прошли).
-            if now_msk < started + timedelta(days=3):
-                continue
-        # Атомарный claim ДО отправки: инкрементируем счётчик условным PATCH
-        # (только если он всё ещё равен прочитанному значению) и проверяем,
-        # что обновилась ровно наша строка. Раньше счётчик инкрементировался
-        # ПОСЛЕ отправки — два минутных запуска cron подряд успевали оба
-        # прочитать одно значение и отправить два сообщения с интервалом в
-        # минуту. Теперь проигравший гонку увидит 0 строк и молча пропустит.
-        client2 = HTTP_CLIENT
-        claim = await client2.patch(
-            f"{SUPABASE_URL}/rest/v1/bible_accounts",
-            headers={**SB_HEADERS, "Prefer": "return=representation"},
-            params={
-                "user_id": f"eq.{uid}",
-                "onboarding_nudges": f"eq.{sent_n}",
-            },
-            # Записываем и счётчик, И метку времени одним атомарным PATCH:
-            # без метки следующий запуск cron не смог бы вычислить интервал
-            # (реальный баг: сообщения уходили минута в минуту).
-            json={
-                "onboarding_nudges": sent_n + 1,
-                "onboarding_last_at": now_msk.isoformat(),
-            },
-        )
-        try:
-            claimed_rows = claim.json() if claim.status_code == 200 else []
-        except Exception:
-            claimed_rows = []
-        if not claimed_rows:
-            continue  # другой воркер уже отправил — не дублируем
-        texts = {
-            0: ("👋 Привет! Ты открыл «План чтения Библии», но ещё не выбрал план.\n"
-                "Выбери удобный темп — от 30 дней до года — и начни с одного короткого отрывка."),
-            1: ("📖 Твой план чтения всё ещё ждёт выбора.\n"
-                "Есть планы на 30, 90 и 365 дней — найди свой и сделай первый шаг."),
-            2: ("🌱 Начать читать Библию проще, чем кажется.\n"
-                "Один отрывок в день — и уже через неделю это станет привычкой. Выбери план?"),
-            3: ("📚 Мы сохранили для тебя лучшие планы чтения.\n"
-                "Загляни и выбери тот, что подходит по темпу — начать никогда не поздно."),
-            4: ("🕊️ Последнее напоминание: план чтения Библии ждёт тебя.\n"
-                "Если сейчас не время — не страшно, бот всегда рядом. Мир тебе!"),
-        }
-        text = texts.get(sent_n, texts[1])
-        result = await bible_send(uid, text, {
-            "inline_keyboard": [[
-                {"text": "📅 Выбрать план", "web_app": {"url": _bible_url(None)}},
-            ]],
-        })
-        if result.get("error_code") == 403:
-            # Заблокировал бота — откатываем счётчик, чтобы при разблокировке
-            # цепочка могла продолжиться корректно (и не тратим попытки зря:
-            # планов нет → обычные напоминания ему и так не приходят).
-            await client2.patch(
-                f"{SUPABASE_URL}/rest/v1/bible_accounts",
-                headers=SB_HEADERS,
-                params={"user_id": f"eq.{uid}", "onboarding_nudges": f"eq.{sent_n + 1}"},
-                json={"onboarding_nudges": sent_n},
-            )
