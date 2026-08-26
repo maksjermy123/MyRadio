@@ -2201,9 +2201,11 @@ async def sb_get_due(hour: int, minute: int) -> list:
     пользователи, ещё не задававшие точное время, продолжают получать
     напоминание ровно в начале часа — поведение для них не меняется.
 
-    Теперь возвращает строки по (user_id, plan_id) — если у пользователя
-    несколько планов с одинаковым временем напоминания, придёт по одному
-    сообщению на каждый план (см. bible_send_reminders)."""
+    ВАЖНО: PostgREST-оператор neq НЕ матчит NULL. Раньше фильтр был просто
+    last_read_date=neq.{today}, и планы, которые НИ РАЗУ не читали
+    (last_read_date IS NULL), полностью выпадали из выборки — такие
+    пользователи никогда не получали ежедневное напоминание.
+    Теперь используем or=(is.null, neq.today)."""
     from datetime import date
     today = date.today().isoformat()
     client = HTTP_CLIENT
@@ -2214,7 +2216,7 @@ async def sb_get_due(hour: int, minute: int) -> list:
             "notify_hour_msk": f"eq.{hour}",
             "notify_minute_msk": f"eq.{minute}",
             "notify_on": "eq.true",
-            "last_read_date": f"neq.{today}",
+            "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
             "select": "user_id,plan_id,title,streak,start_date,days_done",
         },
     )
