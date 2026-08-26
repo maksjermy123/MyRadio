@@ -72,6 +72,7 @@ app.add_middleware(
 # ── Конфигурация ──────────────────────────────────────────────
 BOT_TOKEN                 = os.environ.get("BOT_TOKEN", "")
 WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
+ADMIN_SECRET               = os.environ.get("ADMIN_SECRET", "")
 CHANNEL_ID                = os.environ.get("CHANNEL_ID", "@Chtenie_Preobrazenie")
 DISCUSSION_CHAT_ID        = -1002557846325  # linked чат для комментариев
 INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
@@ -84,6 +85,29 @@ GROQ_API_KEY              = os.environ.get("GROQ_API_KEY", "")
 COHERE_API_KEY            = os.environ.get("COHERE_API_KEY", "")
 BOT_USERNAME              = os.environ.get("BOT_USERNAME", "preoradio_bot")
 DEEPER_PAGE_URL           = f"https://maksjermy123.github.io/MyRadio/deeper.html"
+
+# Операционные маршруты меняют Telegram/GitHub или запускают платный анализ.
+# Они не должны быть доступны по одному только знанию Render URL.
+ADMIN_PATHS = {
+    "/analyze", "/analyze_range", "/analyze_all", "/reindex", "/reindex_all",
+    "/remove_button", "/remove_all_buttons", "/send_button", "/cleanup",
+    "/update_buttons", "/bulk_deeper", "/reload_theology", "/import_texts",
+    "/set_webhook", "/check_webhook", "/set_webhook_bible", "/check_webhook_bible",
+    "/debug_last",
+}
+
+@app.middleware("http")
+async def protect_admin_paths(request: Request, call_next):
+    path = request.url.path
+    protected = path in ADMIN_PATHS or any(
+        path.startswith(prefix + "/") for prefix in ADMIN_PATHS
+        if prefix in {"/analyze", "/remove_button", "/send_button"}
+    )
+    if protected:
+        supplied = request.headers.get("x-admin-secret", "")
+        if not ADMIN_SECRET or not hmac.compare_digest(supplied, ADMIN_SECRET):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return await call_next(request)
 
 TELEGRAM_API  = f"https://api.telegram.org/bot{BOT_TOKEN}"
 GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
@@ -2219,7 +2243,7 @@ async def sb_patch(user_id: int, plan_id: str, payload: dict) -> bool:
         except Exception:
             err = r.text[:300]
         log.error(f"[sb_patch] FAILED {r.status_code} for {user_id}/{plan_id}: {err}")
-        return False
+        raise HTTPException(status_code=503, detail="storage unavailable")
     return True
 
 async def sb_get_due(hour: int, minute: int) -> list:
@@ -2639,11 +2663,14 @@ async def sb_state_get(user_id: int):
 
 async def sb_state_upsert(user_id: int, data: dict):
     client = HTTP_CLIENT
-    await client.post(
+    r = await client.post(
         f"{SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id",
         headers={**SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
         json={"user_id": user_id, "data": data},
     )
+    if r.status_code >= 300:
+        log.error(f"[sb_state_upsert] FAILED {r.status_code} for {user_id}: {r.text[:300]}")
+        raise HTTPException(status_code=503, detail="storage unavailable")
 
 # ── Supabase: bible_accounts (переживает удаление пользователя) ──
 # Отдельная от plan_progress/app_state табличка-маячок: одна строка на
@@ -2863,12 +2890,11 @@ def _require_bible_user(user_id: int, init_data: Optional[str]) -> None:
     используется для /verify — здесь тот же самый механизм, просто
     подключённый к остальным личным эндпоинтам.
 
-    Если BOT_TOKEN не настроен в окружении — не роняем все планы чтения
-    из-за конфигурационной ошибки, а логируем и пропускаем (это тот же
-    компромисс, что и раньше был неявным по умолчанию)."""
+    Если BIBLE_BOT_TOKEN не настроен — мутирующий запрос отклоняется,
+    иначе любой клиент сможет подставить чужой user_id."""
     if not BIBLE_BOT_TOKEN:
-        log.error(f"_require_bible_user: BIBLE_BOT_TOKEN не настроен — user_id={user_id} пропущен БЕЗ проверки подписи")
-        return
+        log.error(f"_require_bible_user: BIBLE_BOT_TOKEN не настроен — запрос отклонён для user_id={user_id}")
+        raise HTTPException(status_code=503, detail="bible bot authentication unavailable")
     if not init_data:
         raise HTTPException(401, "missing init data")
     payload = verify_telegram_init_data(init_data, BIBLE_BOT_TOKEN, max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
