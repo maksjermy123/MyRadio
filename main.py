@@ -1526,7 +1526,8 @@ async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_exis
 
 
 @app.get("/analyze_all")
-async def analyze_all(delay: float = 5.0, skip_existing: bool = True):
+@limiter.limit("10/minute")
+async def analyze_all(request: Request, delay: float = 5.0, skip_existing: bool = True):
     async with httpx.AsyncClient(timeout=20) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
@@ -2200,14 +2201,26 @@ async def sb_upsert(payload: dict) -> tuple:
         return False, str(err)
     return True, None
 
-async def sb_patch(user_id: int, plan_id: str, payload: dict):
+async def sb_patch(user_id: int, plan_id: str, payload: dict) -> bool:
+    """Возвращает True при успехе. Раньше ответ Supabase вообще не
+    проверялся: при сбое (RLS, таймаут) сервер всё равно отвечал клиенту
+    {"ok": true}, а прогресс молча не сохранялся. Теперь сбой виден
+    в логах Render."""
     client = HTTP_CLIENT
-    await client.patch(
+    r = await client.patch(
         f"{SUPABASE_URL}/rest/v1/plan_progress",
         headers=SB_HEADERS,
         params={"user_id": f"eq.{user_id}", "plan_id": f"eq.{plan_id}"},
         json=payload,
     )
+    if r.status_code >= 300:
+        try:
+            err = r.json()
+        except Exception:
+            err = r.text[:300]
+        log.error(f"[sb_patch] FAILED {r.status_code} for {user_id}/{plan_id}: {err}")
+        return False
+    return True
 
 async def sb_get_due(hour: int, minute: int) -> list:
     """Точное совпадение часа И минуты — раньше проверялся только час
@@ -3566,7 +3579,11 @@ async def bible_send_onboarding_nudges(now_msk) -> None:
         headers=SB_HEADERS,
         params={
             "started_at": "not.is.null",
-            "select": "user_id,started_at,onboarding_nudges",
+            # ВАЖНО: onboarding_last_at обязан быть в select — без него
+            # a.get("onboarding_last_at") всегда None, интервал «каждые
+            # 3 дня» не работал бы, и после 3-го дня вся цепочка ушла бы
+            # минута за минутой.
+            "select": "user_id,started_at,onboarding_nudges,onboarding_last_at",
             "limit": "500",
         },
     )
