@@ -16,6 +16,13 @@
   --text:#161D14;--text2:#33402F;--muted:#75816F;
   --border:rgba(50,90,55,.14);--border2:rgba(50,90,55,.26);
   --tab-h:60px;--radius:14px;
+  /* Дозаправка отсутствовавших переменных: --orange/--orange2/--blue/--acc
+     использовались в CSS (.dl, .br, .pb-a, .pb-l, .post-card.pressed, .plk,
+     .bp-*), но в :root не были заданы — кнопка «Я подписался», стрелка
+     «назад», полоска плеера и прижатые карточки рисовались дефолтным
+     цветом/прозрачными. Оттенки — те же, что уже стояли инлайном
+     у станций/категорий; палитра в целом не менялась. */
+  --orange:#C9893A;--orange2:#D4A017;--blue:#2F6FED;--acc:#3E8E52;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overscroll-behavior:none}
@@ -528,15 +535,25 @@ function loadPlan(){
      регистрации сразу попадал в Mini App выбирать план — а уведомления
      потом просто никуда не приходили, потому что чата с ботом так и не
      возникло. */
-  fetchT(BACKEND+'/account/status?user_id='+userId)
-    .then(function(r){return r.json();})
+  /* Одна повторная попытка через 3с при 502/503: сразу после деплоя
+     Render ещё просыпается (холодный старт), и без ретрая человек
+     вместо прогресса видел «Читай Библию по плану» — приглашение для
+     незарегистрированных. */
+  function fetchStatus(url,attempt){
+    return fetchT(url).then(function(r){
+      if((r.status===502||r.status===503)&&!attempt){
+        return new Promise(function(res){setTimeout(function(){res(fetchStatus(url,1));},3000);});
+      }
+      return r.json();
+    });
+  }
+  fetchStatus(BACKEND+'/account/status?user_id='+userId)
     .then(function(a){
       if(!a||!a.registered){
         renderNotRegistered(body);
         return;
       }
-      return fetchT(BACKEND+'/plan/status?user_id='+userId)
-        .then(function(r){return r.json();})
+      return fetchStatus(BACKEND+'/plan/status?user_id='+userId)
         .then(function(d){
           if(d&&d.registered) renderPlanProgress(body,d.plans||[]);
           else renderRegisteredNoPlans(body);
@@ -619,7 +636,7 @@ var PLAN_TITLES={
 function planTitle(d){
   var planId=(d&&typeof d==='object')?d.plan_id:d;
   var realTitle=(d&&typeof d==='object')?d.title:null;
-  if(realTitle)return realTitle;
+  if(realTitle)return esc(realTitle);
   if(PLAN_TITLES[planId])return PLAN_TITLES[planId];
   if(planId&&planId.charAt(0)==='c')return 'Свой план';
   return 'План чтения';
@@ -627,13 +644,19 @@ function planTitle(d){
 /* Общая логика состояния для ОДНОГО плана (вариант B — единое сообщение
    вместо одновременных "стрик" + "отставание", которые могли противоречить
    друг другу). Переиспользуется и для одиночной карточки, и для списка
-   при нескольких одновременных планах. */
+   при нескольких одновременных планах.
+   Работает с ОБОИМИ схемами /plan/status: новой публичной (days_count +
+   серверный lag; полный days_done больше не отдаётся без подписи) и
+   старой полной (days_done[]) — пока бэкенд ещё не обновлён или на
+   переходном периоде. */
 function planSummary(d){
   var rawStreak=d.streak||0;
   var maxStreak=d.max_streak||0;
-  var daysDone=(d.days_done&&d.days_done.length)||0;
+  var daysDone=(d.days_count!=null)?d.days_count:((d.days_done&&d.days_done.length)||0);
   var streak=(d.last_read_date===planToday()||d.last_read_date===planYesterday())?rawStreak:0;
-  var lag=planLag(d.start_date,d.days_done);
+  /* Лаг с сервера — тот же расчёт, что в напоминаниях; локальный planLag
+     — только fallback, пока сервер ещё не отдаёт поле lag. */
+  var lag=(d.lag!=null)?d.lag:planLag(d.start_date,d.days_done);
   var emoji,headline;
   if(lag>0){
     emoji='🎯';headline='Отстаёшь на '+lag+' '+planDayWord(lag)+' — наверстай';
@@ -668,8 +691,13 @@ function renderPlanProgress(body,plans){
   // отдельно, ни один не перезаписывает данные другого).
   var rows=plans.map(function(d){
     var s=planSummary(d);
-    var pid=(d.plan_id||'').replace(/'/g,"\\'");
-    return '<div class="plan-row" style="cursor:pointer" onclick="openBiblePlan(\''+pid+'\')">'
+    /* plan_id попадает в onclick: пропускаем через белый список символов,
+       а не экранирование кавычек — идентификатор легитимно состоит только
+       из латиницы/цифр/подчёркивания (nt_90, c1725...), всё остальное —
+       попытка инъекции, такую карточку рисуем без диплинка в конкретный план. */
+    var safePid=(d.plan_id||'').replace(/[^a-zA-Z0-9_]/g,'');
+    var onclick=safePid?(' onclick="openBiblePlan(\''+safePid+'\')"'):'';
+    return '<div class="plan-row" style="cursor:pointer"'+onclick+'>'
       +'<span class="plan-row-emoji">'+s.emoji+'</span>'
       +'<div class="plan-row-info"><b>'+s.title+'</b><span>'+s.headline+' · '+s.daysDone+' дн. прочитано</span></div>'
       +'<span class="plan-row-arrow">→</span>'
