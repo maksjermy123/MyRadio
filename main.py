@@ -119,7 +119,15 @@ async def protect_admin_paths(request: Request, call_next):
     )
     if protected:
         supplied = request.headers.get("x-admin-secret", "")
-        if not ADMIN_SECRET or not hmac.compare_digest(supplied, ADMIN_SECRET):
+        # compare_digest для str требует ASCII: кириллица, многоточие «…» или
+        # неразрывный пробел в заголовке вызывали TypeError и 500 на ВСЕХ
+        # админ-роутах (случилось на проде 2026-08-30: curl шлёт заголовок
+        # сырыми байтами, Starlette декодирует их как latin-1). Сравниваем
+        # байты: latin-1 восстанавливает исходные байты заголовка без потерь,
+        # секрет кодируем в UTF-8; ASCII-секреты ведут себя как раньше, а
+        # несовпадение по-прежнему даёт маскировочный 404, не 500.
+        if not ADMIN_SECRET or not hmac.compare_digest(
+                supplied.encode("latin-1"), ADMIN_SECRET.encode("utf-8")):
             return JSONResponse(status_code=404, content={"detail": "Not found"})
     return await call_next(request)
 
