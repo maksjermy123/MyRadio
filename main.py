@@ -3421,6 +3421,12 @@ def _plan_title(u) -> str:
         plan_id = u or ""
     if plan_id in PLAN_TITLES:
         return PLAN_TITLES[plan_id]
+    if plan_id and plan_id.startswith("chrono_nt_"):
+        try:
+            d_num = int(plan_id.replace("chrono_nt_", ""))
+            return f"Хронологический Новый Завет ({d_num} {_ru_day_word(d_num)})"
+        except ValueError:
+            return "Хронологический Новый Завет"
     if plan_id and plan_id.startswith("c"):
         return "Свой план"
     return "план чтения"
