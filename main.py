@@ -74,14 +74,28 @@ BOT_TOKEN                 = os.environ.get("BOT_TOKEN", "")
 WEBHOOK_SECRET             = os.environ.get("WEBHOOK_SECRET", "")
 ADMIN_SECRET               = os.environ.get("ADMIN_SECRET", "")
 CHANNEL_ID                = os.environ.get("CHANNEL_ID", "@Chtenie_Preobrazenie")
-DISCUSSION_CHAT_ID        = -1002557846325  # linked чат для комментариев
+# Linked чат для комментариев. Раньше был жёстко вшит в код — теперь берётся
+# из окружения (тот же id по умолчанию, поведение не меняется), чтобы его
+# можно было сменить без правки кода.
+try:
+    DISCUSSION_CHAT_ID        = int(os.environ.get("DISCUSSION_CHAT_ID", "-1002557846325"))
+except ValueError:
+    DISCUSSION_CHAT_ID        = -1002557846325
 INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
 GITHUB_TOKEN              = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO               = os.environ.get("GITHUB_REPO", "maksjermy123/MyRadio")
 GITHUB_BRANCH             = os.environ.get("GITHUB_BRANCH", "main")
 GITHUB_FILE               = os.environ.get("GITHUB_FILE", "posts.json")
 GITHUB_LINKS_FILE         = os.environ.get("GITHUB_LINKS_FILE", "links.json")
+# Векторы Cohere живут ОТДЕЛЬНО от posts.json (см. /split_embeddings):
+# клиент оглавления качает posts.json целиком, и эмбеддинги ему не нужны —
+# раньше они составляли ~2.8 МБ из 3.4 МБ файла, замедляя первый экран
+# мини-аппа и каждый поход в GitHub Contents API.
+GITHUB_EMBEDDINGS_FILE    = os.environ.get("GITHUB_EMBEDDINGS_FILE", "embeddings.json")
 GROQ_API_KEY              = os.environ.get("GROQ_API_KEY", "")
+# Имя модели Groq вынесено в env: раз в квартал модель могут снимать —
+# смена теперь не требует правки кода.
+GROQ_MODEL                = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 COHERE_API_KEY            = os.environ.get("COHERE_API_KEY", "")
 BOT_USERNAME              = os.environ.get("BOT_USERNAME", "preoradio_bot")
 DEEPER_PAGE_URL           = f"https://maksjermy123.github.io/MyRadio/deeper.html"
@@ -93,7 +107,7 @@ ADMIN_PATHS = {
     "/remove_button", "/remove_all_buttons", "/send_button", "/cleanup",
     "/update_buttons", "/bulk_deeper", "/reload_theology", "/import_texts",
     "/set_webhook", "/check_webhook", "/set_webhook_bible", "/check_webhook_bible",
-    "/debug_last",
+    "/debug_last", "/split_embeddings",
 }
 
 @app.middleware("http")
@@ -618,12 +632,29 @@ async def get_embedding(text: str):
         return None
 
 
-async def find_related_by_embedding(post_id: int, embedding: list, posts_data: dict, top_k: int = 2) -> list:
+def _extract_emb_map(emb_data) -> dict:
+    """Нормализует содержимое embeddings.json в плоскую карту {id: [vec]}.
+    Канонический формат — {"embeddings": {"443": [0.12, ...], ...}}; на
+    переходный период допускается и просто плоский dict. None/мусор → {}."""
+    if isinstance(emb_data, dict):
+        inner = emb_data.get("embeddings")
+        if isinstance(inner, dict):
+            return inner
+        return emb_data
+    return {}
+
+
+async def find_related_by_embedding(post_id: int, embedding: list, posts_data: dict, emb_map: dict = None, top_k: int = 2) -> list:
+    # Вектор поста берётся из embeddings.json (каноническое место после
+    # сплита) либо, для записей, ещё не прошедших сплит, из самого поста —
+    # двойная совместимость на переходный период.
     scores = []
     for post in posts_data.get("posts", []):
         if post["id"] == post_id:
             continue
         emb = post.get("embedding")
+        if not emb and emb_map:
+            emb = emb_map.get(str(post["id"]))
         if not emb:
             continue
         sim = cosine_similarity(embedding, emb)
@@ -646,10 +677,58 @@ async def update_related_bidirectional(post_id: int, related_ids: list, links_da
 
 # ── Богословская база ─────────────────────────────────────────
 _theology_cache = None
+# Инвертированный индекс (слово → id записей) строится один раз при первой
+# загрузке базы и служит ЛОКАЛЬНЫМ предфильтром перед Cohere Rerank.
+# Раньше в Rerank уходили ВСЕ ~8038 записей (~3.2 млн символов) — это
+# превышает лимит модели (1000 документов), Cohere возвращал ошибку,
+# она глоталась, и блок «Богословы о теме» молча был всегда пустым.
+_theology_index = None
+
+_RU_STOPWORDS = {
+    "и", "а", "но", "да", "же", "то", "бы", "ли", "как", "что", "это", "этот",
+    "тот", "так", "такой", "такая", "такое", "для", "не", "ни", "на", "по", "о", "об", "от",
+    "до", "из", "за", "под", "над", "у", "к", "ко", "с", "со", "в", "во",
+    "при", "про", "или", "либо", "если", "чтобы", "который", "которая",
+    "которое", "которые", "свой", "своей", "своё", "его", "её", "их", "мой",
+    "моя", "моё", "мы", "вы", "они", "он", "она", "оно", "я", "ты", "есть",
+    "быть", "был", "была", "было", "были", "будет", "будут", "зачем", "почему",
+    "когда", "где", "куда", "какой", "какая", "какие", "весь", "вся", "всё",
+    "the", "a", "an", "of", "to", "in", "is", "and", "or", "on", "for", "it",
+}
+
+# Длина корзины морфологии: токен приводится к 5-символьной основе-корзине
+# («молитва/молитве/молитву» → «молит»), поэтому флексии русского языка
+# ловятся без полноценного стеммера. Мелочь вроде «любовь/любви»
+# (чередование ов/в) может не совпасть — это допустимо: предфильтр —
+# сеть ПОЛНОТЫ из ~10-20 токенов запроса, а точность добирает rerank.
+_THEO_STEM_LEN = 5
+
+
+def _theology_stem(raw: str) -> str:
+    return raw[:_THEO_STEM_LEN]
+
+
+def _theology_tokens(text: str) -> set:
+    """Корзины-основы запроса: нормализуем регистр, режем по не-буквам,
+    отбрасываем стоп-слова и слишком короткие обрывки."""
+    tokens = set()
+    for raw in re.findall(r"[а-яёa-z0-9]+", (text or "").lower()):
+        if len(raw) < 3 or raw in _RU_STOPWORDS:
+            continue
+        tokens.add(_theology_stem(raw))
+    return tokens
+
+
+def _build_theology_index(db: list) -> dict:
+    idx = defaultdict(set)
+    for i, rec in enumerate(db):
+        for tok in _theology_tokens(rec.get("text", "")):
+            idx[tok].add(i)
+    return dict(idx)
 
 
 async def get_theology_db() -> list:
-    global _theology_cache
+    global _theology_cache, _theology_index
     if _theology_cache is not None:
         return _theology_cache
     all_records = []
@@ -665,22 +744,51 @@ async def get_theology_db() -> list:
             except Exception as e:
                 log.error(f"Theology DB part {part} error: {e}")
     _theology_cache = all_records
-    log.info(f"Theology DB loaded: {len(all_records)} записей")
+    _theology_index = _build_theology_index(all_records)
+    log.info(f"Theology DB loaded: {len(all_records)} записей, индекс: {len(_theology_index)} токенов")
     return all_records
 
 
 async def find_theology_quotes(query: str, top_n: int = 3) -> list:
-    # ВНИМАНИЕ: логика подбора и порога релевантности (top_score < 0.92,
-    # threshold = top_score * 0.85) намеренно оставлена без изменений —
-    # как и объём текста, отправляемого в Cohere Rerank (documents),
-    # чтобы результаты ранжирования полностью совпадали с прежними.
+    # Порог релевантности (top_score < 0.92, threshold = top_score * 0.85) и
+    # формат результата НЕ изменились. Изменился ОБЪЁМ, уходящий в Cohere:
+    # раньше туда шли все ~8038 записей (~3.2 млн символов) — больше лимита
+    # rerank-multilingual-v3.0 (1000 документов). Cohere отвечал ошибкой,
+    # исключение глоталось ниже, и блок «Богословы о теме» всегда был пуст.
+    # Теперь двухступенчатый отбор: локальный предфильтр по инвертированному
+    # индексу (топ-120 кандидатов) → Cohere только по ним.
+    # Принцип релевантности: цитата появляется ТОЛЬКО пройдя все ворота
+    # точности (лексическая связность с темой → rerank ≥ 0.92 → порог
+    # 0.85 от top_score → дедуп авторов); иначе блок пуст — «лучше ничего,
+    # чем нерелевантное».
     if not COHERE_API_KEY:
         return []
     try:
         db = await get_theology_db()
         if not db:
             return []
-        sample = db[:]
+        qtokens = _theology_tokens(query)
+        # Принцип «лучше ничего, чем нерелевантное»: без содержательных
+        # токенов запрос не задаёт тему — произвольный срез базы в Cohere
+        # НЕ отправляем. Раньше здесь уходило db[:1000] по порядку файла,
+        # и неотфильтрованная запись могла случайно пройти порог 0.92.
+        if not qtokens or not _theology_index:
+            log.info("Theology: запрос не содержит содержательных токенов — цитаты не подбираем")
+            return []
+        scored = defaultdict(int)
+        for tok in qtokens:
+            for i in _theology_index.get(tok, ()):
+                scored[i] += 1
+        if not scored:
+            log.info("Theology: предфильтр не нашёл совпадений по теме — Cohere не вызываем")
+            return []
+        # Связность-монотонная воронка: записи с БОЛЬШИМ числом совпавших
+        # корзин запроса всегда занимают места в топ-120 раньше записей
+        # с одиночным совпадением; при равенстве — устойчивый порядок.
+        ranked = sorted(scored.items(), key=lambda kv: (-kv[1], kv[0]))
+        candidates = [i for i, _ in ranked[:120]]
+        sample = [db[i] for i in candidates]
+        log.info(f"Theology: предфильтр отобрал {len(sample)}/{len(db)} записей для rerank")
         documents = [rec["text"][:400] for rec in sample]
         payload = {
             "model": "rerank-multilingual-v3.0",
@@ -851,7 +959,7 @@ def _strip_json_fence(text: str) -> str:
 async def analyze_post(post_text: str, topics: list):
     prompt = GROQ_PROMPT.format(post_text=post_text)
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
     }
@@ -1025,24 +1133,42 @@ async def process_post(post: dict, resend_button: bool = True):
         log.info(f"😄 Humor post {post_id} saved.")
         return
 
-    # Нормальный пост
-    embedding = None
+    # Нормальный пост.
+    # Шаг 1: короткий lock ТОЛЬКО на чтение posts.json + embeddings.json.
+    # Раньше lock держался на всё время платного вызова Cohere (15+ сек),
+    # из-за чего параллельный пост канала ждал в очереди и рисковал
+    # таймаутами/409 GitHub. Теперь: прочитали → отпустили → считаем.
     async with _github_lock:
         async with httpx.AsyncClient(timeout=20) as client:
-            posts_data, posts_sha = await github_get(client, GITHUB_FILE)
-            if posts_data is None:
-                posts_data = {"posts": [], "topics": [], "total": 0, "updated": ""}
-            existing = next((p for p in posts_data["posts"] if p["id"] == post_id), None)
-            embedding = existing.get("embedding") if existing else None
-            if not embedding:
-                embedding = await get_embedding(text)
-                if existing and embedding:
-                    existing["embedding"] = embedding
-                    await github_put(client, GITHUB_FILE, posts_data, posts_sha,
-                                     f"embedding for post {post_id}")
+            posts_data, _ = await github_get(client, GITHUB_FILE)
+            emb_data, _ = await github_get(client, GITHUB_EMBEDDINGS_FILE)
+    if posts_data is None:
+        posts_data = {"posts": [], "topics": [], "total": 0, "updated": ""}
+    existing = next((p for p in posts_data["posts"] if p["id"] == post_id), None)
+    emb_map = _extract_emb_map(emb_data)
+    # Вектор: сначала legacy (в самом посте), потом embeddings.json.
+    embedding = (existing.get("embedding") if existing else None) or emb_map.get(str(post_id))
+
+    # Шаг 2: Cohere embed — ВНЕ лока (медленный платный вызов).
+    if not embedding:
+        embedding = await get_embedding(text)
+
+    # Шаг 3: новый вектор сохраняем ТОЛЬКО в embeddings.json — posts.json
+    # качает клиент оглавления, и векторы там ему не нужны (после сплита).
+    if embedding and emb_map.get(str(post_id)) != embedding:
+        async with _github_lock:
+            async with httpx.AsyncClient(timeout=20) as client:
+                fresh_emb, fresh_sha = await github_get(client, GITHUB_EMBEDDINGS_FILE)
+                fresh_map = _extract_emb_map(fresh_emb)
+                fresh_map[str(post_id)] = embedding
+                await github_put(
+                    client, GITHUB_EMBEDDINGS_FILE,
+                    {"embeddings": fresh_map,
+                     "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")},
+                    fresh_sha, f"embedding for post {post_id}")
 
     try:
-        related_task = (find_related_by_embedding(post_id, embedding, posts_data)
+        related_task = (find_related_by_embedding(post_id, embedding, posts_data, emb_map)
                         if embedding else asyncio.sleep(0))
         result, related = await asyncio.gather(
             analyze_post(text, topics), related_task
@@ -1386,13 +1512,16 @@ def _verify_webhook_secret(request: Request) -> bool:
     (см. set_webhook/set_webhook_bible ниже) — значение известно только
     нам и Telegram, подделать его снаружи невозможно.
 
-    Если WEBHOOK_SECRET не задан в окружении — не блокируем (иначе бот
-    молча перестанет отвечать на любые сообщения при забытой переменной),
-    но громко логируем: без секрета админ-панель фактически открыта
-    снаружи."""
+    Если WEBHOOK_SECRET не задан в окружении — ЗАКРЫВАЕМ вебхук (fail-closed):
+    без секрета проверка подлинности невозможна в принципе, а открытый
+    /webhook — это открытая снаружи админ-панель (/users, удаление любых
+    пользователей от имени администратора, если известен его Telegram ID).
+    Лучше бот молчит (ошибка видна в логах при первом же сообщении), чем
+    админка доступна кому угодно. На Render секрет должен быть задан
+    ВСЕГДА — см. DEPLOY_CHECKLIST.md."""
     if not WEBHOOK_SECRET:
-        log.error("_verify_webhook_secret: WEBHOOK_SECRET не настроен — вебхук принимает ЛЮБЫЕ запросы без проверки подлинности!")
-        return True
+        log.error("_verify_webhook_secret: WEBHOOK_SECRET не настроен — вебхук ОТКЛОНЯЕТ все запросы (fail-closed). Задай WEBHOOK_SECRET на Render и перерегистрируй вебхуки (/set_webhook, /set_webhook_bible).")
+        return False
     header = request.headers.get("x-telegram-bot-api-secret-token", "")
     return hmac.compare_digest(header, WEBHOOK_SECRET)
 
@@ -1618,42 +1747,119 @@ async def analyze_all(request: Request, delay: float = 5.0, skip_existing: bool 
     }
 
 
+# ── Фоновые админ-джобы ───────────────────────────────────────
+# Раньше /reindex, /reindex_all, /cleanup, /remove_all_buttons и
+# /import_texts делали всю работу СИНХРОННО внутри HTTP-запроса: Render
+# обрезает такие запросы по таймауту (~30-100с), работа терялась на
+# середине без всякой диагностики. Теперь каждый длинный роут мгновенно
+# отвечает {ok, queued} и уводит работу в asyncio.create_task — как
+# уже сделано раньше для /analyze_all и /analyze_range. Флаг в
+# _ADMIN_JOBS не даёт запустить вторую копию той же job, пока жива
+# первая (двойной /reindex = двойная трата Cohere и гонки записи).
+_ADMIN_JOBS: set = set()
+
+
+def _start_admin_job(name: str, coro) -> dict:
+    if name in _ADMIN_JOBS:
+        return {"ok": False, "error": f"{name} уже выполняется — дождитесь завершения (логи Render)"}
+    _ADMIN_JOBS.add(name)
+
+    async def _runner():
+        try:
+            await coro
+        except Exception as e:
+            log.error(f"admin job {name} failed: {e}")
+        finally:
+            _ADMIN_JOBS.discard(name)
+
+    asyncio.create_task(_runner())
+    log.info(f"admin job {name}: запущена в фоне")
+    return {"ok": True, "queued": True, "job": name,
+            "message": f"{name} запущена в фоне. Прогресс — в логах Render."}
+
+
 @app.get("/reindex")
 async def reindex_all():
-    async with httpx.AsyncClient(timeout=20) as client:
-        posts_data, posts_sha = await github_get(client, GITHUB_FILE)
-    if not posts_data:
-        return {"error": "posts.json not found"}
-    updated = 0
-    for post in posts_data.get("posts", []):
-        if post.get("embedding"):
-            continue
-        emb = await get_embedding(post.get("text", post.get("preview", "")))
-        if emb:
-            post["embedding"] = emb
-            updated += 1
-        await asyncio.sleep(0.5)
-    if updated > 0:
+    async def _job():
         async with httpx.AsyncClient(timeout=20) as client:
-            _, sha = await github_get(client, GITHUB_FILE)
-            await github_put(client, GITHUB_FILE, posts_data, sha,
-                             f"reindex: added {updated} embeddings")
-    return {"ok": True, "updated": updated, "total": len(posts_data.get("posts", []))}
+            posts_data, _ = await github_get(client, GITHUB_FILE)
+            emb_data, emb_sha = await github_get(client, GITHUB_EMBEDDINGS_FILE)
+        if not posts_data:
+            log.error("reindex: posts.json not found")
+            return
+        emb_map = _extract_emb_map(emb_data)
+        updated = 0
+        for post in posts_data.get("posts", []):
+            # Вектор ищем и в посте (legacy), и в embeddings.json —
+            # отсутствует только там и там → считаем заново.
+            if post.get("embedding") or emb_map.get(str(post["id"])):
+                continue
+            emb = await get_embedding(post.get("text", post.get("preview", "")))
+            if emb:
+                emb_map[str(post["id"])] = emb
+                updated += 1
+            await asyncio.sleep(0.5)
+        if updated > 0:
+            async with httpx.AsyncClient(timeout=20) as client:
+                await github_put(
+                    client, GITHUB_EMBEDDINGS_FILE,
+                    {"embeddings": emb_map,
+                     "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")},
+                    emb_sha, f"reindex: added {updated} embeddings")
+        log.info(f"reindex: добавлено {updated} эмбеддингов (всего постов {len(posts_data.get('posts', []))})")
+    return _start_admin_job("reindex", _job())
+
+
+@app.get("/split_embeddings")
+async def split_embeddings():
+    """Разовый перенос векторов Cohere из posts.json в embeddings.json.
+    posts.json качает клиент оглавления целиком — до сплита ~2.8 МБ из
+    3.4 МБ были векторами, которые фронту не нужны. После сплита файл
+    сокращается до ~0.3-0.6 МБ, и первый экран мини-аппа грузится в разы
+    быстрее. Повторный запуск безопасен: после первого же сплита векторов
+    в posts.json не остаётся, updated=0."""
+    async def _job():
+        async with httpx.AsyncClient(timeout=30) as client:
+            posts_data, posts_sha = await github_get(client, GITHUB_FILE)
+            emb_data, emb_sha = await github_get(client, GITHUB_EMBEDDINGS_FILE)
+        if not posts_data:
+            log.error("split_embeddings: posts.json not found")
+            return
+        emb_map = _extract_emb_map(emb_data)
+        moved = 0
+        posts = posts_data.get("posts", [])
+        for post in posts:
+            emb = post.pop("embedding", None)
+            if emb:
+                emb_map[str(post["id"])] = emb
+                moved += 1
+        async with httpx.AsyncClient(timeout=30) as client:
+            await github_put(
+                client, GITHUB_EMBEDDINGS_FILE,
+                {"embeddings": emb_map,
+                 "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")},
+                emb_sha, "split_embeddings: collect vectors")
+            posts_data["posts"] = posts
+            await github_put(client, GITHUB_FILE, posts_data, posts_sha,
+                             f"split_embeddings: removed {moved} vectors from posts.json")
+        log.info(f"split_embeddings: перенесено {moved} векторов, posts.json = {len(posts)} постов")
+    return _start_admin_job("split_embeddings", _job())
 
 
 @app.get("/reindex_all")
 async def reindex_all_posts():
-    async with httpx.AsyncClient(timeout=30) as client:
-        posts_data, sha = await github_get(client, GITHUB_FILE)
-    if not posts_data:
-        return {"error": "posts.json not found"}
+    async def _job():
+        async with httpx.AsyncClient(timeout=30) as client:
+            posts_data, sha = await github_get(client, GITHUB_FILE)
+        if not posts_data:
+            log.error("reindex_all: posts.json not found")
+            return
 
-    posts = posts_data.get("posts", [])
-    updated = 0
-    skipped = 0
-    fetched_from_tg = 0
+        posts = posts_data.get("posts", [])
+        updated = 0
+        skipped = 0
+        fetched_from_tg = 0
 
-    async with httpx.AsyncClient(timeout=20) as client:
         for post in posts:
             raw_tags = post.get("tags")
             if not raw_tags:
@@ -1680,16 +1886,15 @@ async def reindex_all_posts():
             if changed:
                 updated += 1
 
-    posts_data["topics"] = recalc_topics(posts)
-    posts_data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        posts_data["topics"] = recalc_topics(posts)
+        posts_data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        _, fresh_sha = await github_get(client, GITHUB_FILE)
-        await github_put(client, GITHUB_FILE, posts_data, fresh_sha,
-                         f"reindex_all: updated {updated} posts")
-    log.info(f"reindex_all: обновлено {updated}, из TG: {fetched_from_tg}, пропущено {skipped} из {len(posts)}")
-    return {"ok": True, "updated": updated, "fetched_from_telegram": fetched_from_tg,
-            "skipped": skipped, "total": len(posts)}
+        async with httpx.AsyncClient(timeout=30) as client:
+            _, fresh_sha = await github_get(client, GITHUB_FILE)
+            await github_put(client, GITHUB_FILE, posts_data, fresh_sha,
+                             f"reindex_all: updated {updated} posts")
+        log.info(f"reindex_all: обновлено {updated}, из TG: {fetched_from_tg}, пропущено {skipped} из {len(posts)}")
+    return _start_admin_job("reindex_all", _job())
 
 
 @app.get("/remove_button/{post_id}")
@@ -1711,45 +1916,47 @@ async def remove_button(post_id: int):
 
 @app.get("/remove_all_buttons")
 async def remove_all_buttons(delay: float = 2.0):
-    async with httpx.AsyncClient(timeout=30) as client:
-        links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
-    if not links_data:
-        return {"error": "links.json not found"}
+    async def _job():
+        async with httpx.AsyncClient(timeout=30) as client:
+            links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
+        if not links_data:
+            log.error("remove_all_buttons: links.json not found")
+            return
 
-    removed = []
-    skipped = []
+        removed = []
+        skipped = []
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        for post_id_str in sorted(links_data.keys(), key=lambda x: int(x)):
-            pid = int(post_id_str)
-            for attempt in range(3):
-                r = await client.post(
-                    f"{TELEGRAM_API}/editMessageReplyMarkup",
-                    json={"chat_id": CHANNEL_ID, "message_id": pid,
-                          "reply_markup": {"inline_keyboard": []}}
-                )
-                rj = r.json()
-                if rj.get("ok"):
-                    removed.append(pid)
-                    log.info(f"🗑 Кнопка удалена с поста {pid}")
-                    break
-                desc = rj.get("description", "")
-                if "Too Many Requests" in desc or r.status_code == 429:
-                    wait = int(rj.get("parameters", {}).get("retry_after", 30))
-                    log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
-                    await asyncio.sleep(wait)
-                elif "message is not modified" in desc or "Bad Request" in desc:
-                    skipped.append(pid)
-                    log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
-                    break
-                else:
-                    skipped.append(pid)
-                    log.warning(f"⚠️ Пост {pid}: {desc}")
-                    break
-            await asyncio.sleep(delay)
+        async with httpx.AsyncClient(timeout=10) as client:
+            for post_id_str in sorted(links_data.keys(), key=lambda x: int(x)):
+                pid = int(post_id_str)
+                for attempt in range(3):
+                    r = await client.post(
+                        f"{TELEGRAM_API}/editMessageReplyMarkup",
+                        json={"chat_id": CHANNEL_ID, "message_id": pid,
+                              "reply_markup": {"inline_keyboard": []}}
+                    )
+                    rj = r.json()
+                    if rj.get("ok"):
+                        removed.append(pid)
+                        log.info(f"🗑 Кнопка удалена с поста {pid}")
+                        break
+                    desc = rj.get("description", "")
+                    if "Too Many Requests" in desc or r.status_code == 429:
+                        wait = int(rj.get("parameters", {}).get("retry_after", 30))
+                        log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
+                        await asyncio.sleep(wait)
+                    elif "message is not modified" in desc or "Bad Request" in desc:
+                        skipped.append(pid)
+                        log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
+                        break
+                    else:
+                        skipped.append(pid)
+                        log.warning(f"⚠️ Пост {pid}: {desc}")
+                        break
+                await asyncio.sleep(delay)
 
-    log.info(f"remove_all_buttons: удалено={removed}, пропущено={skipped}")
-    return {"ok": True, "removed": removed, "skipped": skipped}
+        log.info(f"remove_all_buttons: удалено={len(removed)}, пропущено={len(skipped)}")
+    return _start_admin_job("remove_all_buttons", _job())
 
 
 @app.get("/send_button")
@@ -1782,63 +1989,65 @@ async def send_button_to_thread(post_id: int, disc_id: int):
 
 @app.get("/cleanup")
 async def cleanup(delay: float = 1.0):
-    async with httpx.AsyncClient(timeout=30) as client:
-        posts_data, _ = await github_get(client, GITHUB_FILE)
-        links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
-    if not posts_data or not links_data:
-        return {"error": "posts.json or links.json not found"}
-
-    removed_buttons = []
-    removed_links = []
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        for post in posts_data.get("posts", []):
-            pid = post["id"]
-            post_tags = post.get("tags") or extract_tags_from_text(
-                post.get("text","") or post.get("preview",""))
-
-            should_have_button = (
-                should_process_ai(post_tags)
-                and not should_skip_button(post_tags)
-                and str(pid) in links_data
-            )
-
-            if not should_have_button:
-                for attempt in range(3):
-                    r = await client.post(
-                        f"{TELEGRAM_API}/editMessageReplyMarkup",
-                        json={"chat_id": CHANNEL_ID, "message_id": pid,
-                              "reply_markup": {"inline_keyboard": []}}
-                    )
-                    rj = r.json()
-                    if rj.get("ok"):
-                        removed_buttons.append(pid)
-                        log.info(f"🗑 Кнопка удалена с поста {pid}")
-                        break
-                    desc = rj.get("description", "")
-                    if "Too Many Requests" in desc or r.status_code == 429:
-                        wait = int(rj.get("parameters", {}).get("retry_after", 30))
-                        log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
-                        await asyncio.sleep(wait)
-                    elif "message is not modified" in desc or "Bad Request" in desc:
-                        log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
-                        break
-                    else:
-                        log.warning(f"⚠️ Пост {pid}: {desc}")
-                        break
-                if str(pid) in links_data:
-                    del links_data[str(pid)]
-                    removed_links.append(pid)
-                await asyncio.sleep(delay)
-
-    if removed_links:
+    async def _job():
         async with httpx.AsyncClient(timeout=30) as client:
-            _, fresh_sha = await github_get(client, GITHUB_LINKS_FILE)
-            await github_put(client, GITHUB_LINKS_FILE, links_data, fresh_sha,
-                             f"cleanup: removed {len(removed_links)} entries")
+            posts_data, _ = await github_get(client, GITHUB_FILE)
+            links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
+        if not posts_data or not links_data:
+            log.error("cleanup: posts.json or links.json not found")
+            return
 
-    log.info(f"cleanup: кнопки удалены {removed_buttons}, links удалены {removed_links}")
-    return {"ok": True, "removed_buttons": removed_buttons, "removed_links": removed_links}
+        removed_buttons = []
+        removed_links = []
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            for post in posts_data.get("posts", []):
+                pid = post["id"]
+                post_tags = post.get("tags") or extract_tags_from_text(
+                    post.get("text","") or post.get("preview",""))
+
+                should_have_button = (
+                    should_process_ai(post_tags)
+                    and not should_skip_button(post_tags)
+                    and str(pid) in links_data
+                )
+
+                if not should_have_button:
+                    for attempt in range(3):
+                        r = await client.post(
+                            f"{TELEGRAM_API}/editMessageReplyMarkup",
+                            json={"chat_id": CHANNEL_ID, "message_id": pid,
+                                  "reply_markup": {"inline_keyboard": []}}
+                        )
+                        rj = r.json()
+                        if rj.get("ok"):
+                            removed_buttons.append(pid)
+                            log.info(f"🗑 Кнопка удалена с поста {pid}")
+                            break
+                        desc = rj.get("description", "")
+                        if "Too Many Requests" in desc or r.status_code == 429:
+                            wait = int(rj.get("parameters", {}).get("retry_after", 30))
+                            log.warning(f"⏳ 429 на посту {pid}, ждём {wait}s...")
+                            await asyncio.sleep(wait)
+                        elif "message is not modified" in desc or "Bad Request" in desc:
+                            log.info(f"ℹ️ Пост {pid}: кнопки уже не было")
+                            break
+                        else:
+                            log.warning(f"⚠️ Пост {pid}: {desc}")
+                            break
+                    if str(pid) in links_data:
+                        del links_data[str(pid)]
+                        removed_links.append(pid)
+                    await asyncio.sleep(delay)
+
+        if removed_links:
+            async with httpx.AsyncClient(timeout=30) as client:
+                _, fresh_sha = await github_get(client, GITHUB_LINKS_FILE)
+                await github_put(client, GITHUB_LINKS_FILE, links_data, fresh_sha,
+                                 f"cleanup: removed {len(removed_links)} entries")
+
+        log.info(f"cleanup: кнопки удалены {len(removed_buttons)}, links удалены {len(removed_links)}")
+    return _start_admin_job("cleanup", _job())
 
 
 @app.get("/update_buttons")
@@ -1958,15 +2167,17 @@ async def reload_theology():
 async def set_webhook(request: Request):
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN not set"}
+    # Fail-closed: без secret_token Telegram будет слать запросы, которые
+    # бэкенд теперь ОТКЛОНЯЕТ (см. _verify_webhook_secret) — бот молчал бы
+    # без всякой диагностики. Регистрация без секрета запрещена.
+    if not WEBHOOK_SECRET:
+        return {"ok": False, "error": "WEBHOOK_SECRET не задан — вебхук не регистрируется (fail-closed). Задай переменную на Render и повтори."}
     webhook_url = str(request.base_url).rstrip("/") + "/webhook"
     payload = {
         "url": webhook_url,
         "allowed_updates": ["channel_post", "edited_channel_post", "message"],
+        "secret_token": WEBHOOK_SECRET,
     }
-    if WEBHOOK_SECRET:
-        payload["secret_token"] = WEBHOOK_SECRET
-    else:
-        log.error("set_webhook: WEBHOOK_SECRET не задан — регистрирую вебхук БЕЗ secret_token")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
@@ -1994,15 +2205,15 @@ async def set_webhook_bible(request: Request):
     этот адрес в браузере после деплоя."""
     if not BIBLE_BOT_TOKEN:
         return {"ok": False, "error": "BIBLE_BOT_TOKEN not set"}
+    # Fail-closed — по той же причине, что и в /set_webhook выше.
+    if not WEBHOOK_SECRET:
+        return {"ok": False, "error": "WEBHOOK_SECRET не задан — вебхук не регистрируется (fail-closed). Задай переменную на Render и повтори."}
     webhook_url = str(request.base_url).rstrip("/") + "/webhook/bible"
     payload = {
         "url": webhook_url,
         "allowed_updates": ["message", "callback_query"],
+        "secret_token": WEBHOOK_SECRET,
     }
-    if WEBHOOK_SECRET:
-        payload["secret_token"] = WEBHOOK_SECRET
-    else:
-        log.error("set_webhook_bible: WEBHOOK_SECRET не задан — регистрирую вебхук БЕЗ secret_token")
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}/setWebhook",
@@ -2025,71 +2236,68 @@ async def check_webhook_bible():
 async def import_texts():
     if not GITHUB_TOKEN:
         return {"error": "GITHUB_TOKEN not set"}
+    async def _job():
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                result_data, result_sha = await github_get(client, "result.json")
+            except Exception as e:
+                log.error(f"import_texts: result.json не найден на GitHub: {e}")
+                return
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            result_data, result_sha = await github_get(client, "result.json")
-        except Exception as e:
-            return {"error": f"result.json не найден на GitHub: {e}"}
+            messages = result_data.get("messages", [])
+            log.info(f"import_texts: {len(messages)} сообщений в result.json")
 
-        messages = result_data.get("messages", [])
-        log.info(f"import_texts: {len(messages)} сообщений в result.json")
+            tg_texts = {}
+            for msg in messages:
+                if msg.get("type") != "message":
+                    continue
+                mid = msg.get("id")
+                raw = msg.get("text", "")
+                if isinstance(raw, str):
+                    text = raw
+                elif isinstance(raw, list):
+                    text = "".join(
+                        p if isinstance(p, str) else p.get("text", "")
+                        for p in raw
+                    )
+                else:
+                    text = ""
+                if mid and text.strip():
+                    tg_texts[mid] = text[:3000]
 
-        tg_texts = {}
-        for msg in messages:
-            if msg.get("type") != "message":
-                continue
-            mid = msg.get("id")
-            raw = msg.get("text", "")
-            if isinstance(raw, str):
-                text = raw
-            elif isinstance(raw, list):
-                text = "".join(
-                    p if isinstance(p, str) else p.get("text", "")
-                    for p in raw
-                )
-            else:
-                text = ""
-            if mid and text.strip():
-                tg_texts[mid] = text[:3000]
+            log.info(f"import_texts: текстов найдено: {len(tg_texts)}")
 
-        log.info(f"import_texts: текстов найдено: {len(tg_texts)}")
+            posts_data, posts_sha = await github_get(client, GITHUB_FILE)
+            posts = posts_data.get("posts", [])
 
-        posts_data, posts_sha = await github_get(client, GITHUB_FILE)
-        posts = posts_data.get("posts", [])
+            updated = 0
+            for post in posts:
+                pid = post["id"]
+                if pid in tg_texts:
+                    existing = post.get("text", "")
+                    if not existing or len(existing) < 100:
+                        post["text"] = tg_texts[pid]
+                        updated += 1
 
-        updated = 0
-        for post in posts:
-            pid = post["id"]
-            if pid in tg_texts:
-                existing = post.get("text", "")
-                if not existing or len(existing) < 100:
-                    post["text"] = tg_texts[pid]
-                    updated += 1
+            log.info(f"import_texts: обновлено {updated} постов")
 
-        log.info(f"import_texts: обновлено {updated} постов")
+            await github_put(client, GITHUB_FILE, posts_data, posts_sha,
+                             f"import: full text for {updated} posts")
 
-        await github_put(client, GITHUB_FILE, posts_data, posts_sha,
-                         f"import: full text for {updated} posts")
+            try:
+                del_body = {
+                    "message": "cleanup: remove result.json",
+                    "sha": result_sha,
+                    "branch": GITHUB_BRANCH,
+                }
+                del_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/result.json"
+                await client.delete(del_url, headers=_gh_headers(), json=del_body)
+                log.info("import_texts: result.json удалён с GitHub")
+            except Exception as e:
+                log.warning(f"import_texts: не удалось удалить result.json: {e}")
 
-        try:
-            del_body = {
-                "message": "cleanup: remove result.json",
-                "sha": result_sha,
-                "branch": GITHUB_BRANCH,
-            }
-            del_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/result.json"
-            await client.delete(del_url, headers=_gh_headers(), json=del_body)
-            log.info("import_texts: result.json удалён с GitHub")
-        except Exception as e:
-            log.warning(f"import_texts: не удалось удалить result.json: {e}")
-
-    return {
-        "ok": True,
-        "messages_in_export": len(tg_texts),
-        "posts_updated": updated,
-        "message": f"Готово! Обновлено {updated} постов. Теперь запусти /reindex и /analyze_all"
-    }
+        log.info(f"import_texts: готово, обновлено {updated} постов. Теперь /reindex и /analyze_all")
+    return _start_admin_job("import_texts", _job())
 
 
 @app.get("/debug_last")
@@ -2151,8 +2359,37 @@ bible_scheduler = AsyncIOScheduler(timezone=MSK)
 # проверки.
 HTTP_CLIENT: httpx.AsyncClient = None
 
+
+def _assert_webhook_routes():
+    """Страховка от класса багов, который уже случался (см. DEPLOY_CHECKLIST.md):
+    декоратор @app.post("/webhook/bible") «уезжал» не к той функции после
+    правок — ast/импорт это не ловит, а боты молчат или отвечают не тем.
+    Проверка без сети: у приложения должна быть ровно ОДНА POST-маршрутизация
+    /webhook → webhook и /webhook/bible → bible_webhook. Дубликат или
+    неправильная функция — процесс не поднимается вовсе (Render покажет
+    crash в логах сразу при деплое, а не через день тишины)."""
+    found = {}
+    for r in app.routes:
+        methods = getattr(r, "methods", None)
+        path = getattr(r, "path", None)
+        if methods and "POST" in methods and path in ("/webhook", "/webhook/bible"):
+            ep = getattr(r, "endpoint", None)
+            name = getattr(ep, "__name__", repr(ep))
+            if path in found:
+                raise RuntimeError(
+                    f"webhook route assert: дубликат POST {path} → {name} "
+                    f"(уже зарегистрирован → {found[path]})")
+            found[path] = name
+    if found.get("/webhook") != "webhook" or found.get("/webhook/bible") != "bible_webhook":
+        raise RuntimeError(
+            f"webhook route assert: POST /webhook → {found.get('/webhook')!r}, "
+            f"POST /webhook/bible → {found.get('/webhook/bible')!r} — вебхуки "
+            f"повешены не на те функции. Деплой прерван.")
+
+
 @app.on_event("startup")
 async def bible_scheduler_startup():
+    _assert_webhook_routes()
     global HTTP_CLIENT
     HTTP_CLIENT = httpx.AsyncClient(timeout=15.0)
     bible_scheduler.start()
@@ -2200,6 +2437,45 @@ async def sb_get_one(user_id: int, plan_id: str):
     )
     data = r.json()
     return data[0] if isinstance(data, list) and data else None
+
+
+# PostgREST по умолчанию отдаёт МАКСИМУМ 1000 строк на запрос, молча обрезая
+# остальное. На росте базы это означало бы: sb_get_due перестаёт видеть
+# «хвост» пользователей (часть людей молча не получает напоминания),
+# /users показывает не всех, онбординг-цепочка обрывается. _sb_fetch_all
+# листает страницы (limit/offset) до конца и склеивает полный список.
+_SB_PAGE = 1000
+_SB_HARD_CAP = 200_000  # предохранитель от бесконечного цикла на битом фильтре
+
+
+async def _sb_fetch_all(table: str, params: dict) -> list:
+    client = HTTP_CLIENT
+    out = []
+    offset = 0
+    while True:
+        page_params = dict(params)
+        page_params["limit"] = str(_SB_PAGE)
+        page_params["offset"] = str(offset)
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers=SB_HEADERS,
+            params=page_params,
+        )
+        if r.status_code != 200:
+            log.error(f"[_sb_fetch_all] {table} FAILED {r.status_code}: {r.text[:200]}")
+            break
+        try:
+            rows = r.json()
+        except Exception:
+            rows = []
+        if not isinstance(rows, list):
+            log.error(f"[_sb_fetch_all] {table}: не список в ответе")
+            break
+        out.extend(rows)
+        if len(rows) < _SB_PAGE or len(out) >= _SB_HARD_CAP:
+            break
+        offset += _SB_PAGE
+    return out
 
 async def sb_upsert(payload: dict) -> tuple:
     """Возвращает (ok, error). Раньше здесь ответ Supabase вообще не
@@ -2262,19 +2538,14 @@ async def sb_get_due(hour: int, minute: int) -> list:
     возвращал бы ВЧЕРАШНИЙ день — прочитавшие после полуночи получали бы
     повторное напоминание тем же утром."""
     today = datetime.now(MSK).date().isoformat()
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/plan_progress",
-        headers=SB_HEADERS,
-        params={
-            "notify_hour_msk": f"eq.{hour}",
-            "notify_minute_msk": f"eq.{minute}",
-            "notify_on": "eq.true",
-            "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
-            "select": "user_id,plan_id,title,streak,start_date,days_done",
-        },
-    )
-    return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
+    rows = await _sb_fetch_all("plan_progress", {
+        "notify_hour_msk": f"eq.{hour}",
+        "notify_minute_msk": f"eq.{minute}",
+        "notify_on": "eq.true",
+        "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
+        "select": "user_id,plan_id,title,streak,start_date,days_done",
+    })
+    return rows if isinstance(rows, list) else []
 
 async def _sb_count(client: httpx.AsyncClient, extra_params: dict) -> int:
     """Считает строки в plan_progress через PostgREST Prefer: count=exact —
@@ -2329,17 +2600,10 @@ async def bible_collect_stats() -> dict:
 # план вроде бы удалён в интерфейсе.
 
 async def _fetch_all_progress_rows() -> list:
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/plan_progress",
-        headers=SB_HEADERS,
-        params={
-            "select": "user_id,plan_id,title,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
-            "order": "user_id",
-        },
-    )
-    data = r.json()
-    return data if isinstance(data, list) else []
+    return await _sb_fetch_all("plan_progress", {
+        "select": "user_id,plan_id,title,streak,max_streak,last_read_date,notify_on,notify_hour_msk,notify_minute_msk",
+        "order": "user_id",
+    })
 
 async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
     """Пользователи, у которых есть слепок app_state, но НИ ОДНОЙ строки в
@@ -2349,21 +2613,10 @@ async def _fetch_orphan_app_state_users(known_user_ids: set) -> list:
     сегодня с реальным призрачным app_state). Это ровно то состояние, которое
     возникает из-за бага «воскрешения» localStorage (см. checkAccountReset на
     клиенте): plan_progress уже пуст, а app_state — ещё нет."""
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/app_state",
-        headers=SB_HEADERS,
-        params={"select": "user_id", "order": "user_id"},
-    )
-    try:
-        data = r.json()
-    except Exception:
-        data = []
-    if not isinstance(data, list):
-        data = []
+    rows = await _sb_fetch_all("app_state", {"select": "user_id", "order": "user_id"})
     seen = set()
     orphans = []
-    for row in data:
+    for row in rows:
         uid = row.get("user_id")
         if uid is None or uid in known_user_ids or uid in seen:
             continue
@@ -2376,25 +2629,13 @@ async def _fetch_onboarding_users(known_user_ids: set) -> list:
     но ни одного плана нет и app_state тоже пуст. Раньше были невидимы для
     админа — их данные живут только в bible_accounts, которую /users не читал.
     Возвращает список user_id."""
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/bible_accounts",
-        headers=SB_HEADERS,
-        params={
-            "started_at": "not.is.null",
-            "select": "user_id",
-            "order": "user_id",
-            "limit": "1000",
-        },
-    )
-    try:
-        data = r.json()
-    except Exception:
-        data = []
-    if not isinstance(data, list):
-        data = []
+    rows = await _sb_fetch_all("bible_accounts", {
+        "started_at": "not.is.null",
+        "select": "user_id",
+        "order": "user_id",
+    })
     result = []
-    for row in data:
+    for row in rows:
         uid = row.get("user_id")
         if uid is None or uid in known_user_ids:
             continue
@@ -2671,6 +2912,11 @@ async def sb_state_upsert(user_id: int, data: dict):
     if r.status_code >= 300:
         log.error(f"[sb_state_upsert] FAILED {r.status_code} for {user_id}: {r.text[:300]}")
         raise HTTPException(status_code=503, detail="storage unavailable")
+    try:
+        rows = r.json()
+        return rows[0] if isinstance(rows, list) and rows else None
+    except Exception:
+        return None
 
 # ── Supabase: bible_accounts (переживает удаление пользователя) ──
 # Отдельная от plan_progress/app_state табличка-маячок: одна строка на
@@ -2904,6 +3150,48 @@ def _require_bible_user(user_id: int, init_data: Optional[str]) -> None:
     if not real_user_id or int(real_user_id) != int(user_id):
         raise HTTPException(403, "user_id does not match init data")
 
+
+def _verify_optional_bible_user(init_data: Optional[str], user_id: int) -> bool:
+    """Для read-only эндпоинтов с двумя режимами (/plan/status, /account/status).
+    init_data ОТСУТСТВУЕТ → False (публичный режим, минимальный срез данных).
+    init_data ЕСТЬ → обязана быть валидной подписью конкретно user_id:
+    невалидная/чужая подпись = 401/403, а не тихий откат в публичный режим.
+    Валидная → True (полные данные). BIBLE_BOT_TOKEN не настроен — при
+    переданной подписи отклоняем (fail-closed), без подписи — публичный режим."""
+    if not init_data:
+        return False
+    if not BIBLE_BOT_TOKEN:
+        log.error(f"_verify_optional_bible_user: BIBLE_BOT_TOKEN не настроен — подписанный запрос отклонён (user_id={user_id})")
+        raise HTTPException(status_code=503, detail="bible bot authentication unavailable")
+    payload = verify_telegram_init_data(init_data, BIBLE_BOT_TOKEN, max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
+    if payload is None:
+        raise HTTPException(401, "invalid init data")
+    real_user_id = (payload.get("user") or {}).get("id")
+    if not real_user_id or int(real_user_id) != int(user_id):
+        raise HTTPException(403, "user_id does not match init data")
+    return True
+
+# Разумный верхний предел дней плана: все системные планы ≤ 365 дней,
+# хроно-конструктор НЗ принимает до 1000. 1500 — с запасом, чтобы не
+# отсечь ни один живой сценарий, но отвесить мусорные списки на 10⁵ элементов.
+_DAYS_MAX_LEN = 1500
+
+
+def _clean_days_done(raw) -> list:
+    """Чистит присланный клиентом список дней: только целые 1.._DAYS_MAX_LEN,
+    без дублей, лимит длины. Раньше days_done был list без ограничений —
+    раздутый список уходил в plan_progress и раздувал строку/ответы."""
+    out = []
+    for d in (raw or [])[:_DAYS_MAX_LEN]:
+        try:
+            di = int(d)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= di <= _DAYS_MAX_LEN and di not in out:
+            out.append(di)
+    return sorted(out)
+
+
 class BibleRegisterBody(BaseModel):
     user_id: int
     plan_id: str = Field(max_length=64)
@@ -2916,7 +3204,7 @@ class BibleRegisterBody(BaseModel):
 class BibleReadBody(BaseModel):
     user_id: int
     plan_id: str = Field(max_length=64)
-    day_number: int
+    day_number: int = Field(ge=1, le=_DAYS_MAX_LEN)
     local_date: Optional[str] = None  # YYYY-MM-DD по локальному времени пользователя
     init_data: Optional[str] = None
 
@@ -2949,6 +3237,9 @@ class BibleUnregisterBody(BaseModel):
 class StateBody(BaseModel):
     user_id: int
     data: dict
+    # Метка серверной записи, от которой пишем клиент (opt-in 409-защита от
+    # last-write-wins между двумя устройствами). None — старые клиенты.
+    base_updated_at: Optional[str] = Field(default=None, max_length=64)
     init_data: Optional[str] = None
 
 # ── Endpoints: планы чтения ────────────────────────────────────
@@ -2960,6 +3251,9 @@ class StateBody(BaseModel):
 @limiter.limit("30/minute")
 async def bible_register(request: Request, body: BibleRegisterBody):
     _require_bible_user(body.user_id, body.init_data)
+    # Аккаунт создаётся ТОЛЬКО мутациями с валидной подписью (и вебхуком
+    # «Старт») — GET /account/status с этой ревизии строк больше не создаёт.
+    await sb_account_ensure(body.user_id)
     payload = {
         "user_id": body.user_id,
         "plan_id": body.plan_id,
@@ -2989,30 +3283,55 @@ async def bible_register(request: Request, body: BibleRegisterBody):
         return {"ok": False, "error": err}
     return {"ok": True}
 
-@app.get("/plan/status")
-async def bible_status(user_id: int, plan_id: Optional[str] = None):
-    """С plan_id — прогресс конкретного плана (плоский объект, как раньше,
-    для обратной совместимости с местами, которые уже знают, какой план их
-    интересует). Без plan_id — сводка ПО ВСЕМ планам пользователя, нужна
-    виджету "План" в мини-аппе Оглавления, который не привязан к одному
-    конкретному плану.
+def _public_plan_row(row: dict) -> dict:
+    """Срез строки plan_progress для НЕподписанных запросов (виджет «План»
+    в радио). Остаётся только то, что виджет реально рисует: стрик, рекорд,
+    даты, число прочитанных дней и серверный лаг. НЕ отдаётся: days_done[]
+    (полный список дней — он и есть IDOR-утечка), notify_* (время напоминаний),
+    last_reminder_sent_at. Лаг считает сервер тем же _days_behind, что и в
+    напоминаниях, — числа в виджете и в боте гарантированно совпадают."""
+    return {
+        "plan_id": row.get("plan_id"),
+        "title": row.get("title"),
+        "streak": row.get("streak", 0),
+        "max_streak": row.get("max_streak", 0),
+        "last_read_date": row.get("last_read_date"),
+        "start_date": row.get("start_date"),
+        "days_count": len(row.get("days_done") or []),
+        "lag": _days_behind(row),
+    }
 
-    НЕ проверяем initData здесь — единственный эндпоинт-исключение из
-    _require_bible_user. Причина архитектурная, не недосмотр: этот
-    эндпоинт легитимно дёргается ИЗ ДРУГОГО мини-аппа (виджет "План" в
-    Radio, открытого через @preoradio_bot), у которого initData подписан
-    ДРУГИМ ботом — проверка через BIBLE_BOT_TOKEN там всегда провалится,
-    что мы уже словили на практике. Раз эндпоинт read-only (отдаёт только
-    стрик/отставание, ничего не меняет), риск ниже, чем у мутирующих
-    эндпоинтов — максимум, что можно узнать без подписи, это чужой прогресс
-    чтения, а не изменить его."""
+
+@app.get("/plan/status")
+@limiter.limit("120/minute")
+async def bible_status(request: Request, user_id: int, plan_id: Optional[str] = None,
+                       init_data: Optional[str] = None):
+    """Один эндпоинт, два режима:
+
+    ПОДПИСАННЫЙ (мини-апп плана; initData бота «План чтения» в заголовке
+    X-Telegram-Init-Data или query) — полный объект плана как раньше,
+    включая days_done и notify_*.
+
+    БЕЗ подписи (виджет «План» в радио — initData другого бота, подписать
+    не может физически) — только публичный срез _public_plan_row.
+    Раньше без подписи отдавался полный days_done[] и notify_* — любой,
+    кто знает чужой Telegram ID, мог читать чужой прогресс целиком (IDOR).
+
+    Инициализация init_data: сначала заголовок, потом query (query оставлен
+    на один релиз для обратной совместимости старых фронтов, потом убрать)."""
+    signed = _verify_optional_bible_user(
+        request.headers.get("x-telegram-init-data") or init_data, user_id)
     if plan_id:
         row = await sb_get_one(user_id, plan_id)
         if not row:
             return {"registered": False}
-        return {"registered": True, **row}
+        if signed:
+            return {"registered": True, **row}
+        return {"registered": True, **_public_plan_row(row)}
     rows = await sb_get_all(user_id)
-    return {"registered": bool(rows), "plans": rows}
+    if signed:
+        return {"registered": bool(rows), "plans": rows}
+    return {"registered": bool(rows), "plans": [_public_plan_row(r) for r in rows]}
 
 @app.post("/plan/read")
 @limiter.limit("60/minute")
@@ -3159,7 +3478,8 @@ async def bible_merge_days(request: Request, body: BibleMergeDaysBody):
     row = await sb_get_one(body.user_id, body.plan_id)
     if not row:
         return {"ok": False, "error": "not registered"}
-    merged = sorted(set((row.get("days_done") or [])) | set(body.days_done or []))
+    client_days = _clean_days_done(body.days_done)
+    merged = sorted(set((row.get("days_done") or [])) | set(client_days))
     patch = {}
     if merged != sorted(row.get("days_done") or []):
         patch["days_done"] = merged
@@ -3186,7 +3506,7 @@ async def bible_set_days(request: Request, body: BibleSetDaysBody):
     row = await sb_get_one(body.user_id, body.plan_id)
     if not row:
         return {"ok": False, "error": "not registered"}
-    cleaned = sorted(set(body.days_done or []))
+    cleaned = _clean_days_done(body.days_done)
     await sb_patch(body.user_id, body.plan_id, {"days_done": cleaned})
     return {"ok": True, "days_done": cleaned}
 
@@ -3204,31 +3524,38 @@ async def bible_settings(request: Request, body: BibleSettingsBody):
 # ── Endpoints: единый аккаунт (полное состояние приложения) ──
 
 @app.get("/account/status")
-async def account_status(user_id: int, init_data: Optional[str] = None):
+@limiter.limit("120/minute")
+async def account_status(request: Request, user_id: int, init_data: Optional[str] = None):
     """Клиент дергает это ПЕРЕД синхронизацией app_state (см. checkAccountReset
     в index.html) — а виджет "План" в Оглавлении/Radio дёргает это же для
-    экрана-гейта "сначала зарегистрируйся в боте". Именно поэтому, как и у
-    /plan/status, НЕ проверяем initData здесь: виджет в другом мини-аппе
-    физически не может прислать подпись, валидную для BIBLE_BOT_TOKEN — у
-    него initData собственного бота (@preoradio_bot). Эндпоинт читает
-    только флаги (reset_token, registered), ничего не мутирует, так что
-    риск ниже, чем у мутирующих /plan/*.
+    экрана-гейта "сначала зарегистрируйся в боте".
 
-    Если сохранённый локально reset_token отличается от того, что вернул
-    этот эндпоинт — значит аккаунт сбрасывали через /users с прошлого раза,
-    и localStorage нужно стереть до пуша на сервер.
+    ДВА режима (как у /plan/status):
+    • БЕЗ подписи (виджет радио) — только {"registered": bool}, больше ничего.
+    • С валидной подписью бота «План чтения» (мини-апп плана) — плюс
+      reset_token, который клиент сверяет для детекта админ-сброса аккаунта.
 
-    registered=True только если пользователь ДЕЙСТВИТЕЛЬНО открывал чат с
-    ботом (started_at заполнен — см. sb_account_mark_started). Просто заход
-    в Mini App по прямой ссылке (в т.ч. из виджета "План" в другом
-    мини-аппе) сам по себе чат не создаёт — и тогда боту физически некуда
-    будет присылать напоминания."""
-    row = await sb_account_ensure(user_id)
-    return {"reset_token": row.get("reset_token"), "registered": bool(row.get("started_at"))}
+    ГЛАВНОЕ изменение: строка аккаунта больше НЕ создаётся на GET. Раньше
+    здесь звался sb_account_ensure, и ЛЮБОЙ вызов ?user_id=123 (в том числе
+    перебор чужих ID) тихо создавал мусорные строки в bible_accounts со
+    свежим reset_token. Теперь GET только читает: нет строки →
+    {"registered": false, "reset_token": None}. Создание строки осталось
+    ровно в двух легитимных местах: вебхук «Старт» (sb_account_mark_started)
+    и первая мутация с валидной подписью (/plan/register)."""
+    signed = _verify_optional_bible_user(
+        request.headers.get("x-telegram-init-data") or init_data, user_id)
+    row = await sb_account_get(user_id)
+    result = {"registered": bool(row and row.get("started_at"))}
+    if signed:
+        result["reset_token"] = row.get("reset_token") if row else None
+    return result
 
 @app.get("/state")
-async def get_state(user_id: int, init_data: Optional[str] = None):
-    _require_bible_user(user_id, init_data)
+async def get_state(request: Request, user_id: int, init_data: Optional[str] = None):
+    # init_data теперь принимается и заголовком X-Telegram-Init-Data (query
+    # оставлен как fallback на переходный период) — initData в URL попадал
+    # в логи Render/прокси и Referer.
+    _require_bible_user(user_id, request.headers.get("x-telegram-init-data") or init_data)
     row = await sb_state_get(user_id)
     if not row:
         return {"exists": False}
@@ -3238,8 +3565,32 @@ async def get_state(user_id: int, init_data: Optional[str] = None):
 @limiter.limit("30/minute")
 async def save_state(request: Request, body: StateBody):
     _require_bible_user(body.user_id, body.init_data)
-    await sb_state_upsert(body.user_id, body.data)
-    return {"ok": True}
+    # Лимит размера слепка: customPlans хранят полные расписания (хроно-НЗ
+    # на 1000 дней — это сотни КБ), поэтому порог большой — 1 МБ; он ловит
+    # только намеренно раздутые/garbage-пейлоады, а не живые состояния.
+    try:
+        body_size = len(json.dumps(body.data, ensure_ascii=False))
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "state not serializable"})
+    if body_size > 1_000_000:
+        return JSONResponse(status_code=413, content={"ok": False, "error": "state too large", "size": body_size})
+    # Конфликтная защита last-write-wins (opt-in): если клиент прислал
+    # base_updated_at, а на сервере с тех пор уже лежит более свежая запись
+    # (другое устройство успело записать) — отвечаем 409 и НЕ затираем.
+    # Старые клиенты base_updated_at не шлют — для них поведение прежнее.
+    if body.base_updated_at:
+        current = await sb_state_get(body.user_id)
+        cur_updated = (current or {}).get("updated_at")
+        if current and cur_updated and cur_updated != body.base_updated_at:
+            return JSONResponse(status_code=409, content={
+                "ok": False, "error": "conflict",
+                "updated_at": cur_updated,
+                "hint": "перезалей состояние сервера через GET /state и повтори при необходимости",
+            })
+    row = await sb_state_upsert(body.user_id, body.data)
+    # updated_at возвращаем клиенту: тот держит метку для следующей
+    # 409-проверки (opt-in last-write-wins защиты) без лишнего GET.
+    return {"ok": True, "updated_at": (row or {}).get("updated_at")}
 
 # ── Webhook ───────────────────────────────────────────────────
 
@@ -3599,38 +3950,23 @@ def _as_aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 async def bible_send_onboarding_nudges(now_msk) -> None:
-    client = HTTP_CLIENT
-    r = await client.get(
-        f"{SUPABASE_URL}/rest/v1/bible_accounts",
-        headers=SB_HEADERS,
-        params={
-            "started_at": "not.is.null",
-            # ВАЖНО: onboarding_last_at обязан быть в select — без него
-            # a.get("onboarding_last_at") всегда None, интервал «каждые
-            # 3 дня» не работал бы, и после 3-го дня вся цепочка ушла бы
-            # минута за минутой.
-            "select": "user_id,started_at,onboarding_nudges,onboarding_last_at",
-            "limit": "500",
-        },
-    )
-    try:
-        accounts = r.json() if r.status_code == 200 else []
-    except Exception:
-        accounts = []
+    # Пагинация вместо limit=500: PostgREST молча обрезает выборку до 1000
+    # строк — на росте «хвост» пользователей переставал получать онбординг.
+    accounts = await _sb_fetch_all("bible_accounts", {
+        "started_at": "not.is.null",
+        # ВАЖНО: onboarding_last_at обязан быть в select — без него
+        # a.get("onboarding_last_at") всегда None, интервал «каждые
+        # 3 дня» не работал бы, и после 3-го дня вся цепочка ушла бы
+        # минута за минутой.
+        "select": "user_id,started_at,onboarding_nudges,onboarding_last_at",
+    })
     if not accounts:
         return
-    # user_id тех, у кого УЖЕ есть хотя бы один план — их исключаем
+    # user_id тех, у кого УЖЕ есть хотя бы один план — их исключаем.
+    # select=user_id лёгкий, но строк может быть больше 10000 — тоже пагинируем.
     with_plan = set()
-    pr = await client.get(
-        f"{SUPABASE_URL}/rest/v1/plan_progress",
-        headers=SB_HEADERS,
-        params={"select": "user_id", "limit": "10000"},
-    )
-    try:
-        for row in (pr.json() if pr.status_code == 200 else []):
-            with_plan.add(row.get("user_id"))
-    except Exception:
-        pass
+    for row in await _sb_fetch_all("plan_progress", {"select": "user_id"}):
+        with_plan.add(row.get("user_id"))
     today = now_msk.date()
     for a in accounts:
         uid = a.get("user_id")
