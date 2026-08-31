@@ -3,6 +3,10 @@ import html as _html
 import hmac
 import hashlib
 import json
+try:
+    import orjson as _orjson
+except ImportError:  # orjson ускоряет парсинг больших JSON, но не обязателен
+    _orjson = None
 import struct
 import re
 import ssl
@@ -19,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote, parse_qsl, quote
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -33,6 +38,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("radio")
 
 app = FastAPI()
+
+# Сжатие больших JSON-ответов (мини-аппы читают контент/списки постов):
+# при Accept-Encoding: gzip переносимый объём падает в разы.
+# Мелкие ответы (<1 КБ, включая ответы на вебхуки Telegram) не трогаем.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Ограничение частоты запросов — намеренно НЕ глобальное (не хотим случайно
 # зацепить радио/контентные эндпоинты, у которых своя, непроверенная в этой
@@ -365,6 +375,65 @@ def _gh_cache_drop(filename: str) -> None:
     _GH_CACHE.pop(filename, None)
 
 
+# ── Общий HTTP-клиент (keep-alive) ────────────────────────────
+# Раньше ~40 мест в коде делали `async with httpx.AsyncClient(timeout=T)`:
+# каждое — новое TCP+TLS-рукопожатие (100–300 мс) на каждый внешний вызов
+# Telegram/Supabase/GitHub/Cohere/Groq. Теперь все блоки работают через
+# ОДИН долгоживущий клиент HTTP_CLIENT (создаётся в startup), а прокси
+# ниже сохраняет прежний по-блочный таймаут и привычную форму записи
+# `async with _http(T) as client:` без структурных правок логики.
+_json_loads = _orjson.loads if _orjson else json.loads
+
+
+class _TimeoutClientProxy:
+    """Прозрачная обёртка над общим клиентом: подставляет таймаут блока
+    в каждый запрос (в оригинале таймаут задавался на уровне клиента).
+    Явно переданный в самом запросе timeout имеет приоритет (setdefault)."""
+    __slots__ = ("_client", "_timeout")
+
+    def __init__(self, client, timeout):
+        self._client = client
+        self._timeout = timeout
+
+    async def _req(self, meth, url, **kw):
+        kw.setdefault("timeout", self._timeout)
+        return await getattr(self._client, meth)(url, **kw)
+
+    async def get(self, url, **kw): return await self._req("get", url, **kw)
+    async def post(self, url, **kw): return await self._req("post", url, **kw)
+    async def put(self, url, **kw): return await self._req("put", url, **kw)
+    async def patch(self, url, **kw): return await self._req("patch", url, **kw)
+    async def delete(self, url, **kw): return await self._req("delete", url, **kw)
+
+    def __getattr__(self, name):  # прочие атрибуты — прямо к клиенту
+        return getattr(self._client, name)
+
+
+class _SharedClientCM:
+    """Async-контекст совместимости: отдаёт общий клиент, НЕ закрывая его
+    при выходе из блока — клиент живёт всё время процесса."""
+    __slots__ = ("_proxy",)
+
+    def __init__(self, proxy):
+        self._proxy = proxy
+
+    async def __aenter__(self):
+        return self._proxy
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False  # исключения не глотаем, общий клиент не закрываем
+
+
+def _http(timeout: float = 15.0) -> _SharedClientCM:
+    global HTTP_CLIENT
+    if HTTP_CLIENT is None or getattr(HTTP_CLIENT, "is_closed", False):
+        # Фолбэк (вызов до startup / тесты): создаём клиент через атрибут
+        # модуля httpx — в тестах сюда подставляется стаб. Клиент сохраняем
+        # в HTTP_CLIENT, чтобы он переиспользовался, а не утекал.
+        HTTP_CLIENT = httpx.AsyncClient(timeout=timeout)
+    return _SharedClientCM(_TimeoutClientProxy(HTTP_CLIENT, timeout))
+
+
 # ── GitHub API ────────────────────────────────────────────────
 def _gh_headers() -> dict:
     return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
@@ -387,7 +456,7 @@ async def github_get(client: httpx.AsyncClient, filename: str):
 
     if file_size < 900_000 and meta.get("content"):
         try:
-            data = json.loads(base64.b64decode(meta["content"]).decode())
+            data = _json_loads(base64.b64decode(meta["content"]).decode())
             # Кэшируем и быстрый путь — иначе все файлы < 900КБ (а это
             # posts.json и links.json) ходили бы в GitHub на КАЖДОЕ чтение,
             # и TTL-кэш не работал бы вовсе.
@@ -403,7 +472,7 @@ async def github_get(client: httpx.AsyncClient, filename: str):
     try:
         data = r2.json()
     except Exception:
-        data = json.loads(r2.text)
+        data = _json_loads(r2.text)
     _gh_cache_put(filename, data, sha)
     return data, sha
 
@@ -631,7 +700,7 @@ async def get_embedding(text: str):
             "input_type": "search_document",
             "embedding_types": ["float"],
         }
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with _http(15) as client:
             r = await client.post(COHERE_API, headers=_cohere_headers(), json=payload)
             r.raise_for_status()
             return r.json()["embeddings"]["float"][0]
@@ -735,18 +804,52 @@ def _build_theology_index(db: list) -> dict:
     return dict(idx)
 
 
+# Кэш итогов rerank: key → (ts, quotes). Повторный вопрос по той же теме
+# отвечает мгновенно, без платного вызова Cohere. Кладётся ИТОГОВЫЙ
+# результат ПОСЛЕ всех ворот точности, поэтому гарантия релевантности
+# («лучше ничего, чем нерелевантное») идентична некэшированному пути.
+# Инвалидация: TTL 15 минут + полная очистка на /reload_theology.
+_RERANK_CACHE = {}
+_RERANK_CACHE_TTL = 900.0
+_RERANK_CACHE_MAX = 128
+
+
+def _rerank_cache_key(query: str, top_n: int) -> str:
+    norm = " ".join((query or "").lower().split())[:1000]
+    return f"{top_n}|{norm}"
+
+
+def _rerank_cache_get(key: str):
+    ent = _RERANK_CACHE.get(key)
+    if not ent:
+        return None
+    ts, val = ent
+    if time.time() - ts > _RERANK_CACHE_TTL:
+        _RERANK_CACHE.pop(key, None)
+        return None
+    return val
+
+
+def _rerank_cache_put(key: str, val: list) -> None:
+    _RERANK_CACHE[key] = (time.time(), [dict(q) for q in val])
+    if len(_RERANK_CACHE) > _RERANK_CACHE_MAX:
+        oldest = sorted(_RERANK_CACHE.items(), key=lambda kv: kv[1][0])
+        for k, _ in oldest[: len(_RERANK_CACHE) - _RERANK_CACHE_MAX]:
+            _RERANK_CACHE.pop(k, None)
+
+
 async def get_theology_db() -> list:
     global _theology_cache, _theology_index
     if _theology_cache is not None:
         return _theology_cache
     all_records = []
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _http(30) as client:
         for part in range(1, 4):
             url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/theology_db_{part}.json"
             try:
                 r = await client.get(url)
                 if r.status_code == 200:
-                    records = r.json()
+                    records = _json_loads(r.text)
                     all_records.extend(records)
                     log.info(f"Theology DB part {part}: {len(records)} записей")
             except Exception as e:
@@ -797,6 +900,13 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
         candidates = [i for i, _ in ranked[:120]]
         sample = [db[i] for i in candidates]
         log.info(f"Theology: предфильтр отобрал {len(sample)}/{len(db)} записей для rerank")
+        # Кэш rerank: смотрим ДО платного вызова Cohere, но ПОСЛЕ предфильтра
+        # (запросы без содержательных токенов сюда не доходят, как и раньше).
+        _ck = _rerank_cache_key(query, top_n)
+        _cached = _rerank_cache_get(_ck)
+        if _cached is not None:
+            log.info(f"Theology: кэш rerank — {len(_cached)} цитат без вызова Cohere")
+            return [dict(q) for q in _cached]
         documents = [rec["text"][:400] for rec in sample]
         payload = {
             "model": "rerank-multilingual-v3.0",
@@ -805,15 +915,17 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
             "top_n": top_n,
             "return_documents": True,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             r = await client.post(COHERE_RERANK, headers=_cohere_headers(), json=payload)
             r.raise_for_status()
             results = r.json().get("results", [])
         if not results:
+            _rerank_cache_put(_ck, [])  # легитимный пустой итог — тоже кэш
             return []
         top_score = results[0]["relevance_score"]
         if top_score < 0.92:
             log.info(f"Theology: top_score={top_score:.3f} < 0.92 — цитаты не релевантны, пропускаем")
+            _rerank_cache_put(_ck, [])
             return []
         threshold = top_score * 0.85
         quotes = []
@@ -838,6 +950,7 @@ async def find_theology_quotes(query: str, top_n: int = 3) -> list:
             if len(quotes) >= top_n:
                 break
         log.info(f"Theology: {len(quotes)} quotes, top={top_score:.3f}, threshold={threshold:.3f}")
+        _rerank_cache_put(_ck, quotes)
         return quotes
     except Exception as e:
         log.error(f"Theology search error: {e}")
@@ -857,7 +970,7 @@ async def get_bible_db(client: httpx.AsyncClient):
         try:
             r = await client.get(url, timeout=30)
             if r.status_code == 200:
-                _bible_cache = r.json()
+                _bible_cache = _json_loads(r.text)
                 log.info(f"Bible DB loaded: {len(_bible_cache)} books")
                 return _bible_cache
         except Exception as e:
@@ -876,7 +989,7 @@ async def _get_bible_db_cached():
     """
     global _bible_cache
     if _bible_cache is None:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with _http(15) as client:
             await get_bible_db(client)
     return _bible_cache
 
@@ -972,7 +1085,7 @@ async def analyze_post(post_text: str, topics: list):
         "temperature": 0.3,
     }
     for attempt in range(3):
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with _http(120) as client:
             r = await client.post(GROQ_URL, headers=_groq_headers(), json=payload)
         if r.status_code == 429:
             wait = 65 if attempt == 0 else 120
@@ -1001,7 +1114,7 @@ async def send_deeper_button(post_id: int):
         {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
     ]]}
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http(15) as client:
 
         # ── Шаг 1: быстрый путь — getDiscussionMessage ──────────
         disc_msg_id = None
@@ -1104,7 +1217,7 @@ async def process_post(post: dict, resend_button: bool = True):
 
     # Склейка с предыдущим постом если он помечен #продолжение
     prev_id = post_id - 1
-    async with httpx.AsyncClient(timeout=15) as _cl:
+    async with _http(15) as _cl:
         _posts_check, _ = await github_get(_cl, GITHUB_FILE)
     if _posts_check:
         _prev = next((p for p in _posts_check.get("posts", []) if p["id"] == prev_id), None)
@@ -1128,7 +1241,7 @@ async def process_post(post: dict, resend_button: bool = True):
             "humor_author": "А. П. Чехов"
         }
         async with _github_lock:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with _http(20) as client:
                 links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
                 if links_data is None:
                     links_data = {}
@@ -1147,7 +1260,7 @@ async def process_post(post: dict, resend_button: bool = True):
     # из-за чего параллельный пост канала ждал в очереди и рисковал
     # таймаутами/409 GitHub. Теперь: прочитали → отпустили → считаем.
     async with _github_lock:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _http(20) as client:
             posts_data, _ = await github_get(client, GITHUB_FILE)
             emb_data, _ = await github_get(client, GITHUB_EMBEDDINGS_FILE)
     if posts_data is None:
@@ -1165,7 +1278,7 @@ async def process_post(post: dict, resend_button: bool = True):
     # качает клиент оглавления, и векторы там ему не нужны (после сплита).
     if embedding and emb_map.get(str(post_id)) != embedding:
         async with _github_lock:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with _http(20) as client:
                 fresh_emb, fresh_sha = await github_get(client, GITHUB_EMBEDDINGS_FILE)
                 fresh_map = _extract_emb_map(fresh_emb)
                 fresh_map[str(post_id)] = embedding
@@ -1202,7 +1315,7 @@ async def process_post(post: dict, resend_button: bool = True):
         bible_ref["translations"] = make_translation_links(ref_str)
 
     async with _github_lock:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _http(20) as client:
             links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
             if links_data is None:
                 links_data = {}
@@ -1254,7 +1367,7 @@ async def upsert_post_to_github(message: dict, is_edit: bool = False) -> str:
     }
 
     async with _github_lock:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _http(20) as client:
             for attempt in range(3):
                 try:
                     posts_data, sha = await github_get(client, GITHUB_FILE)
@@ -1436,7 +1549,7 @@ async def handle_user_message(message: dict):
             {"text": "📚 Глубже", "url": f"https://t.me/{bot_username}/deeper?startapp={post_id or ''}"}
         ]]}
     }
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with _http(10) as client:
         r = await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
         if r.json().get("ok"):
             log.info(f"✅ web_app кнопка → пользователю {chat_id}, пост {post_id}")
@@ -1479,7 +1592,7 @@ async def verify(request: VerifyRequest):
     if not user_id:
         raise HTTPException(403, "No user id")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with _http(10.0) as client:
         resp = None
         for attempt in range(2):
             resp = await client.get(
@@ -1594,7 +1707,7 @@ async def webhook(request: Request):
 
 @app.get("/links/{post_id}")
 async def get_links(post_id: int):
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http(15) as client:
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
     if not links_data or str(post_id) not in links_data:
         return JSONResponse(status_code=404, content={"error": "not found"})
@@ -1612,7 +1725,7 @@ async def manual_analyze(post_id: int, resend_button: bool = True):
     /links/{post_id}.
     Пример: /analyze/424?resend_button=false
     """
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http(15) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
     if not posts_data:
         return JSONResponse(status_code=404, content={"error": "posts.json not found"})
@@ -1639,7 +1752,7 @@ async def manual_analyze(post_id: int, resend_button: bool = True):
 
 @app.get("/analyze_range")
 async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_existing: bool = False):
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _http(30) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
     if not posts_data:
@@ -1689,7 +1802,7 @@ async def analyze_range(from_id: int, to_id: int, delay: float = 20.0, skip_exis
 @app.get("/analyze_all")
 @limiter.limit("10/minute")
 async def analyze_all(request: Request, delay: float = 5.0, skip_existing: bool = True):
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with _http(20) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
 
@@ -1789,7 +1902,7 @@ def _start_admin_job(name: str, coro) -> dict:
 @app.get("/reindex")
 async def reindex_all():
     async def _job():
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with _http(20) as client:
             posts_data, _ = await github_get(client, GITHUB_FILE)
             emb_data, emb_sha = await github_get(client, GITHUB_EMBEDDINGS_FILE)
         if not posts_data:
@@ -1808,7 +1921,7 @@ async def reindex_all():
                 updated += 1
             await asyncio.sleep(0.5)
         if updated > 0:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with _http(20) as client:
                 await github_put(
                     client, GITHUB_EMBEDDINGS_FILE,
                     {"embeddings": emb_map,
@@ -1827,7 +1940,7 @@ async def split_embeddings():
     быстрее. Повторный запуск безопасен: после первого же сплита векторов
     в posts.json не остаётся, updated=0."""
     async def _job():
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             posts_data, posts_sha = await github_get(client, GITHUB_FILE)
             emb_data, emb_sha = await github_get(client, GITHUB_EMBEDDINGS_FILE)
         if not posts_data:
@@ -1841,7 +1954,7 @@ async def split_embeddings():
             if emb:
                 emb_map[str(post["id"])] = emb
                 moved += 1
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             await github_put(
                 client, GITHUB_EMBEDDINGS_FILE,
                 {"embeddings": emb_map,
@@ -1857,7 +1970,7 @@ async def split_embeddings():
 @app.get("/reindex_all")
 async def reindex_all_posts():
     async def _job():
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             posts_data, sha = await github_get(client, GITHUB_FILE)
         if not posts_data:
             log.error("reindex_all: posts.json not found")
@@ -1897,7 +2010,7 @@ async def reindex_all_posts():
         posts_data["topics"] = recalc_topics(posts)
         posts_data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             _, fresh_sha = await github_get(client, GITHUB_FILE)
             await github_put(client, GITHUB_FILE, posts_data, fresh_sha,
                              f"reindex_all: updated {updated} posts")
@@ -1907,7 +2020,7 @@ async def reindex_all_posts():
 
 @app.get("/remove_button/{post_id}")
 async def remove_button(post_id: int):
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with _http(10) as client:
         r = await client.post(
             f"{TELEGRAM_API}/editMessageReplyMarkup",
             json={"chat_id": CHANNEL_ID, "message_id": post_id,
@@ -1925,7 +2038,7 @@ async def remove_button(post_id: int):
 @app.get("/remove_all_buttons")
 async def remove_all_buttons(delay: float = 2.0):
     async def _job():
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
         if not links_data:
             log.error("remove_all_buttons: links.json not found")
@@ -1934,7 +2047,7 @@ async def remove_all_buttons(delay: float = 2.0):
         removed = []
         skipped = []
 
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with _http(10) as client:
             for post_id_str in sorted(links_data.keys(), key=lambda x: int(x)):
                 pid = int(post_id_str)
                 for attempt in range(3):
@@ -1974,7 +2087,7 @@ async def send_button_to_thread(post_id: int, disc_id: int):
     keyboard = {"inline_keyboard": [[
         {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
     ]]}
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http(15) as client:
         r = await client.post(
             f"{TELEGRAM_API}/sendMessage",
             json={
@@ -1998,7 +2111,7 @@ async def send_button_to_thread(post_id: int, disc_id: int):
 @app.get("/cleanup")
 async def cleanup(delay: float = 1.0):
     async def _job():
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _http(30) as client:
             posts_data, _ = await github_get(client, GITHUB_FILE)
             links_data, links_sha = await github_get(client, GITHUB_LINKS_FILE)
         if not posts_data or not links_data:
@@ -2008,7 +2121,7 @@ async def cleanup(delay: float = 1.0):
         removed_buttons = []
         removed_links = []
 
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with _http(10) as client:
             for post in posts_data.get("posts", []):
                 pid = post["id"]
                 post_tags = post.get("tags") or extract_tags_from_text(
@@ -2049,7 +2162,7 @@ async def cleanup(delay: float = 1.0):
                     await asyncio.sleep(delay)
 
         if removed_links:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with _http(30) as client:
                 _, fresh_sha = await github_get(client, GITHUB_LINKS_FILE)
                 await github_put(client, GITHUB_LINKS_FILE, links_data, fresh_sha,
                                  f"cleanup: removed {len(removed_links)} entries")
@@ -2060,7 +2173,7 @@ async def cleanup(delay: float = 1.0):
 
 @app.get("/update_buttons")
 async def update_buttons(delay: float = 1.5):
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _http(30) as client:
         posts_data, _ = await github_get(client, GITHUB_FILE)
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
     if not posts_data or not links_data:
@@ -2082,7 +2195,7 @@ async def update_buttons(delay: float = 1.5):
 
     async def _run():
         done = 0
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with _http(10) as client:
             for pid in queued:
                 miniapp_url = f"https://t.me/{bot_username}/deeper?startapp={pid}"
                 keyboard = {"inline_keyboard": [[
@@ -2144,7 +2257,7 @@ async def update_buttons(delay: float = 1.5):
 
 @app.get("/bulk_deeper")
 async def bulk_deeper(delay: float = 1.5):
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http(15) as client:
         links_data, _ = await github_get(client, GITHUB_LINKS_FILE)
     if not links_data:
         return {"error": "links.json not found or empty"}
@@ -2167,6 +2280,7 @@ async def bulk_deeper(delay: float = 1.5):
 async def reload_theology():
     global _theology_cache
     _theology_cache = None
+    _RERANK_CACHE.clear()  # итоги rerank от старой базы больше не валидны
     db = await get_theology_db()
     return {"ok": True, "loaded": len(db)}
 
@@ -2186,7 +2300,7 @@ async def set_webhook(request: Request):
         "allowed_updates": ["channel_post", "edited_channel_post", "message"],
         "secret_token": WEBHOOK_SECRET,
     }
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with _http(10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
             json=payload)
@@ -2199,7 +2313,7 @@ async def set_webhook(request: Request):
 async def check_webhook():
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN not set"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with _http(10.0) as client:
         return (await client.get(
             f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo")).json()
 
@@ -2222,7 +2336,7 @@ async def set_webhook_bible(request: Request):
         "allowed_updates": ["message", "callback_query"],
         "secret_token": WEBHOOK_SECRET,
     }
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with _http(10.0) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}/setWebhook",
             json=payload)
@@ -2235,7 +2349,7 @@ async def set_webhook_bible(request: Request):
 async def check_webhook_bible():
     if not BIBLE_BOT_TOKEN:
         return {"ok": False, "error": "BIBLE_BOT_TOKEN not set"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with _http(10.0) as client:
         return (await client.get(
             f"https://api.telegram.org/bot{BIBLE_BOT_TOKEN}/getWebhookInfo")).json()
 
@@ -2245,7 +2359,7 @@ async def import_texts():
     if not GITHUB_TOKEN:
         return {"error": "GITHUB_TOKEN not set"}
     async def _job():
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with _http(60.0) as client:
             try:
                 result_data, result_sha = await github_get(client, "result.json")
             except Exception as e:
@@ -2312,7 +2426,7 @@ async def import_texts():
 async def debug_last():
     if not GITHUB_TOKEN:
         return {"error": "GITHUB_TOKEN not set"}
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with _http(15.0) as client:
         try:
             data, _ = await github_get(client, GITHUB_FILE)
             posts = data.get("posts", [])
@@ -2360,11 +2474,10 @@ bible_scheduler = AsyncIOScheduler(timezone=MSK)
 # соединение на КАЖДЫЙ запрос к Supabase, вместо переиспользования уже
 # открытого keep-alive соединения. При росте числа пользователей (и,
 # соответственно, числа обращений к Supabase) это заметно бьёт по задержке.
-# Намеренно НЕ трогаем остальные httpx.AsyncClient(timeout=...) в проекте
-# (радио/анализ постов) — они написаны раньше, с осознанно подобранными
-# таймаутами под конкретные внешние вызовы (GitHub, Telegram), и не были
-# частью этой сессии — рефакторить их заодно было бы risky без отдельной
-# проверки.
+# С этой ревизии общий клиент распространён на ВЕСЬ внешний HTTP: все ~40
+# бывших `async with httpx.AsyncClient(timeout=T)` переведены на _http(T)
+# (см. хелпер выше) — тот же клиент, те же по-блочные таймауты, но без
+# повторных TCP/TLS-рукопожатий на каждый вызов.
 HTTP_CLIENT: httpx.AsyncClient = None
 
 
@@ -2395,11 +2508,45 @@ def _assert_webhook_routes():
             f"повешены не на те функции. Деплой прерван.")
 
 
+# ── Прогрев кэшей при старте ──────────────────────────────
+# После холодного старта/пробуждения инстанса TTL-кэш GitHub-файлов пуст:
+# первый пользователь платил загрузку posts.json + embeddings.json + базы
+# теологии + Библии «из кармана» (лишние секунды на первый отклик).
+# Теперь это делает фоновая задача сразу после старта; ошибки прогрева
+# не фатальны — при реальном запросе данные дозагрузятся как раньше.
+_WARMUP_TASK = None
+
+
+async def _warmup_data() -> None:
+    t0 = time.monotonic()
+    try:
+        async with _http(30) as cl:
+            for fname in (GITHUB_FILE, GITHUB_EMBEDDINGS_FILE):
+                try:
+                    await github_get(cl, fname)
+                except Exception as e:
+                    log.warning(f"warmup: {fname}: {e!r}")
+    except Exception as e:
+        log.warning(f"warmup: github: {e!r}")
+    try:
+        await get_theology_db()
+    except Exception as e:
+        log.warning(f"warmup: теология: {e!r}")
+    try:
+        await _get_bible_db_cached()
+    except Exception as e:
+        log.warning(f"warmup: Библия: {e!r}")
+    log.info(f"warmup: кэши прогреты за {time.monotonic() - t0:.2f}с")
+
+
 @app.on_event("startup")
 async def bible_scheduler_startup():
     _assert_webhook_routes()
-    global HTTP_CLIENT
+    global HTTP_CLIENT, _WARMUP_TASK
     HTTP_CLIENT = httpx.AsyncClient(timeout=15.0)
+    # Прогрев в фоне: не тормозит старт; к моменту первого запроса кэши
+    # обычно уже заполнены.
+    _WARMUP_TASK = asyncio.create_task(_warmup_data())
     bible_scheduler.start()
 
 @app.on_event("shutdown")
