@@ -1619,7 +1619,16 @@ async def verify(request: VerifyRequest):
     if not data.get("ok"):
         return {"allowed": False, "reason": data.get("description", "api_error")}
     status = data["result"].get("status", "")
-    return {"allowed": status in {"member", "administrator", "creator"}, "status": status}
+    # «restricted» — участник, которого админ ограничил (например, мут): он
+    # ОСТАЁТСЯ подписчиком (is_member=true), но старый фильтр member/
+    # administrator/creator давал ему ложный отказ и закрывал весь радио-апп,
+    # включая виджет «План». Для member/administrator/creator Telegram может
+    # не присылать is_member — там подписка и так очевидна из статуса.
+    is_member = bool(data["result"].get("is_member",
+                       status in {"member", "administrator", "creator"}))
+    allowed = status in {"member", "administrator", "creator"} or \
+              (status == "restricted" and is_member)
+    return {"allowed": allowed, "status": status}
 
 
 def _verify_webhook_secret(request: Request) -> bool:
@@ -3337,6 +3346,35 @@ def _verify_optional_bible_user(init_data: Optional[str], user_id: int) -> bool:
         raise HTTPException(403, "user_id does not match init data")
     return True
 
+
+def _verify_signed_user(request: Request, user_id: int,
+                        init_data: Optional[str]) -> Optional[str]:
+    """Единая проверка подписи для кросс-эндпоинтов виджета «План»
+    (/plan/status, /account/status): initData бота «План чтения»
+    (BIBLE_BOT_TOKEN) ИЛИ initData радио-бота (BOT_TOKEN) — у каждого
+    мини-аппа initData подписан своим ботом, а бэкенд знает оба токена.
+    Возвращает 'bible' | 'radio' | None и НЕ бросает исключений: неверная/
+    просроченная подпись трактуется как её отсутствие, fail-closed решает
+    вызывающий эндпоинт. Раньше здесь был только bible-вариант через
+    _verify_optional_bible_user (с 401/403 на чужую подпись), из-за чего
+    initData радио-бота физически не проходила проверку — и срез прогресса
+    приходилось держать публичным (доступным любому, кто знает user_id)."""
+    init_header = (request.headers.get("X-Telegram-Init-Data")
+                   or request.headers.get("x-telegram-init-data")
+                   or init_data)
+    if not init_header:
+        return None
+    for bot, token in (("bible", BIBLE_BOT_TOKEN), ("radio", BOT_TOKEN)):
+        if not token:
+            continue
+        payload = verify_telegram_init_data(init_header, token,
+                                            max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
+        if payload:
+            real_user_id = (payload.get("user") or {}).get("id")
+            if real_user_id and int(real_user_id) == int(user_id):
+                return bot
+    return None
+
 # Разумный верхний предел дней плана: все системные планы ≤ 365 дней,
 # хроно-конструктор НЗ принимает до 1000. 1500 — с запасом, чтобы не
 # отсечь ни один живой сценарий, но отвесить мусорные списки на 10⁵ элементов.
@@ -3472,30 +3510,38 @@ def _public_plan_row(row: dict) -> dict:
 @limiter.limit("120/minute")
 async def bible_status(request: Request, user_id: int, plan_id: Optional[str] = None,
                        init_data: Optional[str] = None):
-    """Один эндпоинт, два режима:
+    """Один эндпоинт, два режима подписи (общая проверка _verify_signed_user):
 
-    ПОДПИСАННЫЙ (мини-апп плана; initData бота «План чтения» в заголовке
-    X-Telegram-Init-Data или query) — полный объект плана как раньше,
-    включая days_done и notify_*.
+    ПОДПИСЬ бота «План чтения» (мини-апп плана; initData в заголовке
+    X-Telegram-Init-Data или query) — полный объект плана, включая
+    days_done и notify_*.
 
-    БЕЗ подписи (виджет «План» в радио — initData другого бота, подписать
-    не может физически) — только публичный срез _public_plan_row.
-    Раньше без подписи отдавался полный days_done[] и notify_* — любой,
-    кто знает чужой Telegram ID, мог читать чужой прогресс целиком (IDOR).
+    ПОДПИСЬ радио-бота (BOT_TOKEN; виджет «План» на третьей вкладке MyRadio —
+    initData того же радио-аппа) — публичный срез _public_plan_row: стрик,
+    рекорд, лаг, число прочитанных дней. days_done[] и notify_* не отдаются.
+
+    БЕЗ подписи — fail-closed: {"registered": false, "plans": []}. Раньше
+    срез отдавался любому, кто знает user_id (перебираемый): план, стрик
+    и дата последнего чтения — чувствительные данные о религиозной практике.
 
     Инициализация init_data: сначала заголовок, потом query (query оставлен
     на один релиз для обратной совместимости старых фронтов, потом убрать)."""
-    signed = _verify_optional_bible_user(
-        request.headers.get("x-telegram-init-data") or init_data, user_id)
+    signed = _verify_signed_user(request, user_id, init_data)
     if plan_id:
         row = await sb_get_one(user_id, plan_id)
         if not row:
             return {"registered": False}
-        if signed:
+        if not signed:
+            log.warning("/plan/status без подписи: user_id=%s", user_id)
+            return {"registered": False}
+        if signed == "bible":
             return {"registered": True, **row}
         return {"registered": True, **_public_plan_row(row)}
     rows = await sb_get_all(user_id)
-    if signed:
+    if not signed:
+        log.warning("/plan/status без подписи: user_id=%s", user_id)
+        return {"registered": False, "plans": []}
+    if signed == "bible":
         return {"registered": bool(rows), "plans": rows}
     return {"registered": bool(rows), "plans": [_public_plan_row(r) for r in rows]}
 
@@ -3696,10 +3742,13 @@ async def account_status(request: Request, user_id: int, init_data: Optional[str
     в index.html) — а виджет "План" в Оглавлении/Radio дёргает это же для
     экрана-гейта "сначала зарегистрируйся в боте".
 
-    ДВА режима (как у /plan/status):
-    • БЕЗ подписи (виджет радио) — только {"registered": bool}, больше ничего.
-    • С валидной подписью бота «План чтения» (мини-апп плана) — плюс
-      reset_token, который клиент сверяет для детекта админ-сброса аккаунта.
+    ДВА режима подписи (общая проверка _verify_signed_user, как у /plan/status):
+    • ПОДПИСЬ радио-бота (виджет «План» в Оглавлении/Radio) — только
+      {"registered": bool}, больше ничего.
+    • ПОДПИСЬ бота «План чтения» (мини-апп плана) — плюс reset_token, который
+      клиент сверяет для детекта админ-сброса аккаунта.
+    • БЕЗ подписи — fail-closed: {"registered": false} (раньше факт
+      регистрации аккаунта по перебираемому user_id раскрывался).
 
     ГЛАВНОЕ изменение: строка аккаунта больше НЕ создаётся на GET. Раньше
     здесь звался sb_account_ensure, и ЛЮБОЙ вызов ?user_id=123 (в том числе
@@ -3708,11 +3757,13 @@ async def account_status(request: Request, user_id: int, init_data: Optional[str
     {"registered": false, "reset_token": None}. Создание строки осталось
     ровно в двух легитимных местах: вебхук «Старт» (sb_account_mark_started)
     и первая мутация с валидной подписью (/plan/register)."""
-    signed = _verify_optional_bible_user(
-        request.headers.get("x-telegram-init-data") or init_data, user_id)
+    signed = _verify_signed_user(request, user_id, init_data)
     row = await sb_account_get(user_id)
     result = {"registered": bool(row and row.get("started_at"))}
-    if signed:
+    if not signed:
+        log.warning("/account/status без подписи: user_id=%s", user_id)
+        return {"registered": False}
+    if signed == "bible":
         result["reset_token"] = row.get("reset_token") if row else None
     return result
 
