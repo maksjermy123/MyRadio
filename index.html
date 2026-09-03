@@ -982,9 +982,16 @@ function clearSrch(){
 }
 
 /* ── ОТКРЫТИЕ ПОСТА:
-   Desktop Telegram → tg.openTelegramLink (открывает внутри Telegram)
-   Telegram Web     → window.location без _blank (в той же вкладке)
-   Мобильный        → tg.openLink (не закрывает Mini App)
+   Desktop / iOS / Android (Bot API ≥ 7.0)
+       → tg.openTelegramLink (канал поверх аппа, возврат свайпом)
+   Telegram Web (web/weba)
+       → window.open(_blank)
+   iOS, апп открыт из ТОГО ЖЕ канала, за 1.5с не скрылся
+       → tg.close() (пост уже открыт за аппом)
+   Android/Desktop, за 1.5с не скрылся, либо close не поддержан
+       → tg.openLink (браузер, запасной видимый путь)
+   Ссылки на другие мини-аппы (/plan /radio /deeper)
+       → openTelegramLink БЕЗ фолбэка (см. комментарий в коде)
 ── */
 function openPost(url){
   if(!tg){ window.open(url,'_blank'); return; }
@@ -1059,11 +1066,15 @@ function openPost(url){
   починит эту особенность на своей стороне, visibilitychange будет
   срабатывать быстро, и запасной openLink() просто никогда не вызовется.
 */
-/* 1500мс вместо 700: на iOS видимый переход в канал занимает дольше,
-   и короткий таймер запускал браузерный фолбэк даже при УСПЕШНОМ
-   openTelegramLink — пользователь видел лишнюю прослойку. Случай
-   "мини-апп открыт из того же канала" (перехода нет вообще) это
-   не лечит — там нужен репорт в @BotSupport. */
+/* 1500мс: iOS сворачивает апп медленно, короткий таймер
+   запускал фолбэк даже при УСПЕШНОМ openTelegramLink.
+   Тихий случай «апп открыт из того же канала»:
+   навигация в фоне уже произошла (инспектор Safari, 08.07.2026),
+   видимого перехода нет. На iOS лечим WebApp.close() —
+   апп уходит, под ним уже лежит пост. openLink() здесь
+   открывал Safari (Telegram-iOS #1670) и нарушал контракт
+   user-gesture (вызов из setTimeout). Android/Desktop
+   оставляем на прежнем openLink: там тишина редка. */
 var TG_LINK_FALLBACK_MS = 1500;
 
 function openViaTelegramLinkWithFallback(url){
@@ -1077,12 +1088,25 @@ function openViaTelegramLinkWithFallback(url){
   }
   document.addEventListener('visibilitychange', onVisChange);
 
-  tg.openTelegramLink(url);
+  try { tg.openTelegramLink(url); } catch(e){}
 
   setTimeout(function(){
     document.removeEventListener('visibilitychange', onVisChange);
-    if (!settled){
-      tg.openLink(url, {try_instant_view:false});
+    if (settled) return;
+
+    var plat = (tg.platform || '').toLowerCase();
+    if (plat === 'ios' && tg.close){
+      try { tg.close(); } catch(e){}
+      setTimeout(function(){
+        if (!settled && tg.openLink){
+          try { tg.openLink(url, {try_instant_view:false}); } catch(e){}
+        }
+      }, 800);
+      return;
+    }
+
+    if (tg.openLink){
+      try { tg.openLink(url, {try_instant_view:false}); } catch(e){}
     }
   }, TG_LINK_FALLBACK_MS);
 }
