@@ -540,7 +540,10 @@ function loadPlan(){
      вместо прогресса видел «Читай Библию по плану» — приглашение для
      незарегистрированных. */
   function fetchStatus(url,attempt){
-    return fetchT(url).then(function(r){
+    /* Запросы подписываются initData радио-аппа (подпись BOT_TOKEN): сервер
+       больше не отдаёт срез прогресса без подписи (fail-closed против
+       перебора user_id). */
+    return fetchT(url,{headers:{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}).then(function(r){
       if((r.status===502||r.status===503)&&!attempt){
         return new Promise(function(res){setTimeout(function(){res(fetchStatus(url,1));},3000);});
       }
