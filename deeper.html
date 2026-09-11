@@ -274,10 +274,56 @@
     else window.open(url, "_blank");
   }
 
+  /* Переход в канал/пост — как в оглавлении MyRadio (iOS same-channel fix):
+     openTelegramLink + 1.5с ожидание visibilitychange. На iOS при «тихом»
+     сбое (мини-апп открыт из того же канала — видимого перехода нет, пост
+     уже открыт за аппом) закрываем апп close(), под ним пост. openLink()
+     здесь открывал Safari (Telegram-iOS #1670) и нарушал контракт
+     user-gesture (вызов из setTimeout). Android/Desktop при тишине —
+     openLink (запасной видимый путь). Внешние ссылки остаются через
+     openLink — им браузер и нужен. */
+  const TG_LINK_FALLBACK_MS = 1500;
+  function openTelegramLinkWithFallback(url) {
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (!['https:', 'http:'].includes(parsed.protocol)) return;
+      url = parsed.href;
+    } catch (e) { return; }
+    haptic();
+    const canNative = !!tg?.openTelegramLink && (!tg.isVersionAtLeast || tg.isVersionAtLeast('7.0'));
+    if (!canNative) { openLink(url); return; }
+    let settled = false;
+    const onVisChange = () => {
+      if (document.hidden) {
+        settled = true;
+        document.removeEventListener('visibilitychange', onVisChange);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisChange);
+    try { tg.openTelegramLink(url); } catch (e) {}
+    setTimeout(() => {
+      document.removeEventListener('visibilitychange', onVisChange);
+      if (settled) return;
+      const plat = (tg?.platform || '').toLowerCase();
+      if (plat === 'ios' && tg?.close) {
+        try { tg.close(); } catch (e) {}
+        setTimeout(() => {
+          if (!settled && tg?.openLink) {
+            try { tg.openLink(url, { try_instant_view: false }); } catch (e) {}
+          }
+        }, 800);
+        return;
+      }
+      if (tg?.openLink) {
+        try { tg.openLink(url, { try_instant_view: false }); } catch (e) {}
+      }
+    }, TG_LINK_FALLBACK_MS);
+  }
+
   function openPostInChannel() {
     if (!currentPostId) return;
     haptic();
-    openLink(`https://t.me/${CHANNEL}/${currentPostId}`);
+    openTelegramLinkWithFallback(`https://t.me/${CHANNEL}/${currentPostId}`);
   }
 
   function sharePost() {
@@ -490,7 +536,7 @@
 
     if (data.related_posts?.length) {
       const items = data.related_posts.map((id, i) => `
-        <div class="related-item" onclick="haptic();openLink('https://t.me/${CHANNEL}/${id}')">
+        <div class="related-item" onclick="haptic();openTelegramLinkWithFallback('https://t.me/${CHANNEL}/${id}')">
           <div class="related-num">${i + 1}</div>
           <div>
             <div class="related-title">Пост #${id}</div>
