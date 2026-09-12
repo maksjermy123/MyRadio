@@ -97,6 +97,10 @@ GITHUB_REPO               = os.environ.get("GITHUB_REPO", "maksjermy123/MyRadio"
 GITHUB_BRANCH             = os.environ.get("GITHUB_BRANCH", "main")
 GITHUB_FILE               = os.environ.get("GITHUB_FILE", "posts.json")
 GITHUB_LINKS_FILE         = os.environ.get("GITHUB_LINKS_FILE", "links.json")
+# Кэш привязок "пост канала -> disc_id треда в группе комментариев".
+# Наполняется автоматически из вебхука (авто-пересылка поста в связанную
+# группу), переживает рестарты Render. См. remember_disc_thread/_resolve_disc_id.
+GITHUB_THREADS_FILE       = os.environ.get("GITHUB_THREADS_FILE", "disc_threads.json")
 # Векторы Cohere живут ОТДЕЛЬНО от posts.json (см. /split_embeddings):
 # клиент оглавления качает posts.json целиком, и эмбеддинги ему не нужны —
 # раньше они составляли ~2.8 МБ из 3.4 МБ файла, замедляя первый экран
@@ -1106,6 +1110,94 @@ async def analyze_post(post_text: str, topics: list):
 
 
 # ── Кнопка «Глубже» ───────────────────────────────────────────
+_disc_threads: dict = {}                      # "443" -> 883 (пост канала -> корень треда)
+_disc_threads_loaded = False                  # disc_threads.json прочитан хотя бы раз
+_last_channel_post = {"id": None, "ts": 0.0}  # страховка для пересылок без forward_from_message_id
+
+
+async def load_disc_threads(client) -> None:
+    """Ленивая загрузка кэша тредов из GitHub (один раз за жизнь процесса)."""
+    global _disc_threads, _disc_threads_loaded
+    if _disc_threads_loaded:
+        return
+    _disc_threads_loaded = True
+    try:
+        data, _ = await github_get(client, GITHUB_THREADS_FILE)
+        if isinstance(data, dict) and isinstance(data.get("threads"), dict):
+            for k, v in data["threads"].items():
+                try:
+                    _disc_threads[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    continue
+            log.info(f"🧵 disc_threads.json: загружено {len(_disc_threads)} привязок пост→тред")
+    except Exception as e:
+        log.warning(f"⚠️ disc_threads.json не прочитан (это ок при первом запуске): {e}")
+
+
+async def remember_disc_thread(post_id: int, disc_msg_id: int) -> None:
+    """Кэширует привязку пост→тред в памяти и сохраняет в disc_threads.json."""
+    key = str(post_id)
+    if _disc_threads.get(key) == disc_msg_id:
+        return
+    _disc_threads[key] = disc_msg_id
+    try:
+        async with _github_lock:
+            async with _http(20) as client:
+                data, sha = await github_get(client, GITHUB_THREADS_FILE)
+                if not isinstance(data, dict) or not isinstance(data.get("threads"), dict):
+                    data, sha = {"threads": {}}, None
+                if data["threads"].get(key) == disc_msg_id:
+                    return
+                data["threads"][key] = disc_msg_id
+                data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                await github_put(client, GITHUB_THREADS_FILE, data, sha,
+                                 f"disc thread for post {post_id} -> {disc_msg_id}")
+        log.info(f"🧵 Пост {post_id} → disc_id={disc_msg_id} закэширован (память + disc_threads.json)")
+    except Exception as e:
+        # Кэш в памяти уже обновлён — кнопка отправится даже при сбое GitHub.
+        log.warning(f"⚠️ disc_threads.json не сохранён для поста {post_id}: {e}")
+
+
+async def _resolve_disc_id(client, post_id: int) -> Optional[int]:
+    """disc_id треда поста: память (вебхук) → GitHub → getDiscussionMessage → закреп."""
+    key = str(post_id)
+    if _disc_threads.get(key):
+        return _disc_threads[key]
+    await load_disc_threads(client)
+    if _disc_threads.get(key):
+        return _disc_threads[key]
+
+    # Исторический метод — Telegram сейчас отвечает 404; оставлен на случай,
+    # если метод вернут: тогда подхватим его автоматически.
+    disc = await client.get(
+        f"{TELEGRAM_API}/getDiscussionMessage",
+        params={"chat_id": CHANNEL_ID, "message_id": post_id}
+    )
+    disc_data = disc.json()
+    if disc_data.get("ok"):
+        disc_msg_id = int(disc_data["result"]["message"]["message_id"])
+        log.info(f"📨 Пост {post_id} → getDiscussionMessage OK, disc_msg_id={disc_msg_id}")
+        asyncio.create_task(remember_disc_thread(post_id, disc_msg_id))
+        return disc_msg_id
+
+    # Резерв: закреп группы — если закреплена пересылка целевого поста.
+    gc = await client.get(
+        f"{TELEGRAM_API}/getChat",
+        params={"chat_id": DISCUSSION_CHAT_ID}
+    )
+    gc_data = gc.json()
+    if gc_data.get("ok"):
+        pinned = gc_data["result"].get("pinned_message", {})
+        if pinned.get("forward_from_message_id") == post_id:
+            disc_msg_id = int(pinned["message_id"])
+            log.info(f"📨 Пост {post_id} → найден через pinned_message, disc_msg_id={disc_msg_id}")
+            asyncio.create_task(remember_disc_thread(post_id, disc_msg_id))
+            return disc_msg_id
+    else:
+        log.warning(f"⚠️ getChat({DISCUSSION_CHAT_ID}) failed: {gc_data.get('description')}")
+    return None
+
+
 async def send_deeper_button(post_id: int):
     """Отправляет кнопку «Глубже» в тред поста в чате комментариев."""
     bot_username = BOT_USERNAME.lstrip("@")
@@ -1116,54 +1208,30 @@ async def send_deeper_button(post_id: int):
 
     async with _http(15) as client:
 
-        # ── Шаг 1: быстрый путь — getDiscussionMessage ──────────
-        disc_msg_id = None
-        disc = await client.get(
-            f"{TELEGRAM_API}/getDiscussionMessage",
-            params={"chat_id": CHANNEL_ID, "message_id": post_id}
-        )
-        disc_data = disc.json()
-        if disc_data.get("ok"):
-            disc_msg_id = disc_data["result"]["message"]["message_id"]
-            log.info(f"📨 Пост {post_id} → getDiscussionMessage OK, disc_msg_id={disc_msg_id}")
+        # ── Шаг 1: resolve disc_id ────────────────────────────────
+        # Кэш вебхука (авто-пересылка поста в группу обсуждения) наполняется
+        # за ~1-2с после публикации, а AI-фаза перед кнопкой длится 15-60с,
+        # поэтому к моменту кнопки привязка обычно уже готова.
+        disc_msg_id = await _resolve_disc_id(client, post_id)
 
-        # ── Шаг 2: резервный путь — getChat(DISCUSSION_CHAT_ID) ──
+        # ── Шаг 2: страховка — ждём кэш треда от вебхука ─────────
+        # Раньше здесь был опрос закрепа группы (бесполезен, когда в закрепе
+        # пересылка чужого поста — например, технического). Теперь каждая
+        # попытка перечитывает живой кэш, который наполняет вебхук.
         if disc_msg_id is None:
-            log.info(f"📨 Пост {post_id} → getDiscussionMessage 404, пробуем getChat...")
-            gc = await client.get(
-                f"{TELEGRAM_API}/getChat",
-                params={"chat_id": DISCUSSION_CHAT_ID}
-            )
-            gc_data = gc.json()
-            if gc_data.get("ok"):
-                pinned = gc_data["result"].get("pinned_message", {})
-                if pinned.get("forward_from_message_id") == post_id:
-                    disc_msg_id = pinned["message_id"]
-                    log.info(f"📨 Пост {post_id} → найден через pinned_message, disc_msg_id={disc_msg_id}")
-                else:
-                    found = False
-                    for attempt in range(6):
-                        wait = 10 * (attempt + 1)
-                        log.warning(
-                            f"⏳ pinned={pinned.get('forward_from_message_id')} ≠ {post_id}, "
-                            f"ждём {wait}s (попытка {attempt+1}/6)..."
-                        )
-                        await asyncio.sleep(wait)
-                        gc2 = await client.get(f"{TELEGRAM_API}/getChat", params={"chat_id": DISCUSSION_CHAT_ID})
-                        gc2_data = gc2.json()
-                        if gc2_data.get("ok"):
-                            pinned2 = gc2_data["result"].get("pinned_message", {})
-                            if pinned2.get("forward_from_message_id") == post_id:
-                                disc_msg_id = pinned2["message_id"]
-                                log.info(f"📨 Пост {post_id} → найден через pinned_message (retry), disc_msg_id={disc_msg_id}")
-                                found = True
-                                break
-                    if not found:
-                        log.error(f"❌ Не удалось найти disc_msg_id для поста {post_id} — добавьте вручную через /send_button")
-                        return
-            else:
-                log.error(f"❌ getChat failed: {gc_data.get('description')}")
-                return
+            for attempt in range(6):
+                wait = 10 * (attempt + 1)
+                log.warning(
+                    f"⏳ disc_id для поста {post_id} ещё не известен, ждём {wait}s "
+                    f"(попытка {attempt+1}/6)..."
+                )
+                await asyncio.sleep(wait)
+                disc_msg_id = await _resolve_disc_id(client, post_id)
+                if disc_msg_id is not None:
+                    break
+        if disc_msg_id is None:
+            log.error(f"❌ Не удалось найти disc_msg_id для поста {post_id} — добавьте вручную через /send_button")
+            return
 
         # ── Шаг 3: отправляем кнопку в тред ──────────────────────
         r = await client.post(
@@ -1671,6 +1739,25 @@ async def webhook(request: Request):
 
     if update.get("message"):
         msg = update["message"]
+        # ── Кэш тредов для кнопки «Глубже» ────────────────────────
+        # Каждый пост канала Telegram автоматически дублирует в связанную
+        # группу обсуждения; бот (админ группы) получает это как "message"
+        # с is_automatic_forward=true. Из апдейта достаём disc_id треда и
+        # запоминаем привязку — getDiscussionMessage Telegram не обслуживает.
+        if msg.get("is_automatic_forward"):
+            group_id = str((msg.get("chat") or {}).get("id", ""))
+            if group_id == str(DISCUSSION_CHAT_ID):
+                ch_post_id = msg.get("forward_from_message_id")
+                if not ch_post_id and _last_channel_post["id"] \
+                        and (time.time() - _last_channel_post["ts"]) < 600:
+                    ch_post_id = _last_channel_post["id"]
+                    log.info(f"🧵 Авто-пересылка без forward_from_message_id — сопоставлена с постом {ch_post_id} по времени")
+                if ch_post_id:
+                    try:
+                        asyncio.create_task(remember_disc_thread(
+                            int(ch_post_id), int(msg.get("message_id"))))
+                    except (TypeError, ValueError):
+                        log.warning(f"⚠️ Не удалось закэшировать тред: post={ch_post_id} msg={msg.get('message_id')}")
         # Обрабатываем только личные сообщения боту (тип чата private).
         # Сообщения из чата комментариев тоже приходят как "message" —
         # их нужно игнорировать, иначе бот отвечает кнопкой на каждое.
@@ -1696,6 +1783,11 @@ async def webhook(request: Request):
     if not username_match and not id_match:
         log.warning(f"update_id={update_id}: чужой чат @{chat_username} — пропускаем")
         return {"ok": True, "action": "ignored_wrong_chat"}
+
+    # Последний пост канала — страховка для авто-пересылок в группу без
+    # forward_from_message_id (см. кэш тредов в ветке "message" выше).
+    _last_channel_post["id"] = message.get("message_id")
+    _last_channel_post["ts"] = time.time()
 
     # Раньше upsert_post_to_github await'ился до ответа Telegram: 2-4 запроса
     # к GitHub (до 20+ секунд с retry) удерживали вебхук, Telegram при таймауте
@@ -2110,6 +2202,9 @@ async def send_button_to_thread(post_id: int, disc_id: int):
     result = r.json()
     if result.get("ok"):
         log.info(f"✅ Кнопка «Глубже» вручную → тред поста {post_id} (disc_id={disc_id})")
+        # Ручная привязка становится постоянной: будущие /analyze по этому
+        # посту найдут тред в кэше и не плодят дубликаты кнопки.
+        asyncio.create_task(remember_disc_thread(post_id, disc_id))
         return {"ok": True, "post_id": post_id, "disc_id": disc_id}
     else:
         desc = result.get("description", "")
@@ -2210,17 +2305,12 @@ async def update_buttons(delay: float = 1.5):
                 keyboard = {"inline_keyboard": [[
                     {"text": "📚 Глубже — библейский контекст поста", "url": miniapp_url}
                 ]]}
-                disc = await client.get(
-                    f"{TELEGRAM_API}/getDiscussionMessage",
-                    params={"chat_id": CHANNEL_ID, "message_id": pid}
-                )
-                disc_data = disc.json()
-                if not disc_data.get("ok"):
-                    log.error(f"❌ getDiscussionMessage {pid}: {disc_data.get('description')}")
+                disc_msg_id = await _resolve_disc_id(client, pid)
+                if disc_msg_id is None:
+                    log.error(f"❌ disc_id для поста {pid} не найден (кэш тредов пуст, закреп не совпал)")
                     done += 1
                     await asyncio.sleep(delay)
                     continue
-                disc_msg_id = disc_data["result"]["message"]["message_id"]
                 r = await client.post(
                     f"{TELEGRAM_API}/sendMessage",
                     json={
