@@ -3577,6 +3577,30 @@ async def bible_register(request: Request, body: BibleRegisterBody):
         return {"ok": False, "error": err}
     return {"ok": True}
 
+def _msk_today_iso() -> str:
+    return datetime.now(MSK).date().isoformat()
+
+
+def _msk_yesterday_iso() -> str:
+    return (datetime.now(MSK) - timedelta(days=1)).date().isoformat()
+
+
+def _effective_streak(row: dict) -> int:
+    """Серверный аналог клиентского effStreak(): стрик действителен, только
+    если last_read_date ∈ {сегодня, вчера} (по МСК, как вся система
+    напоминаний). Раньше reminders/виджет «План» отдавали row['streak'] как
+    есть — у пользователя, давно не открывавшего бота, уведомление и виджет
+    показывали «🔥 5 дней подряд» при давно сломанной серии, расходясь с
+    бейджем самого мини-аппа (там effStreck давал 0). max_streak НЕ трогаем —
+    это личный рекорд и он не «протухает»."""
+    last = (row.get("last_read_date") or "")[:10]
+    if not last:
+        return 0
+    if last in (_msk_today_iso(), _msk_yesterday_iso()):
+        return int(row.get("streak", 0) or 0)
+    return 0
+
+
 def _public_plan_row(row: dict) -> dict:
     """Срез строки plan_progress для НЕподписанных запросов (виджет «План»
     в радио). Остаётся только то, что виджет реально рисует: стрик, рекорд,
@@ -3587,7 +3611,7 @@ def _public_plan_row(row: dict) -> dict:
     return {
         "plan_id": row.get("plan_id"),
         "title": row.get("title"),
-        "streak": row.get("streak", 0),
+        "streak": _effective_streak(row),
         "max_streak": row.get("max_streak", 0),
         "last_read_date": row.get("last_read_date"),
         "start_date": row.get("start_date"),
@@ -3653,7 +3677,7 @@ async def bible_read(request: Request, body: BibleReadBody):
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
     last = row.get("last_read_date")
     if last == today and body.day_number in (row.get("days_done") or []):
-        return {"ok": True, "streak": row["streak"], "already": True}
+        return {"ok": True, "streak": _effective_streak(row), "already": True}
     streak = row.get("streak", 0)
     if last == yesterday:
         streak += 1
@@ -4185,7 +4209,7 @@ async def bible_send_reminders():
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
             continue
-        streak = u.get("streak", 0)
+        streak = _effective_streak(u)
         lag = _days_behind(u)
         title = _plan_title(u)
         days_done_n = len(u.get("days_done") or [])
