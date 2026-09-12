@@ -14,9 +14,10 @@
 |---|---|
 | `main.py` | Весь бэкенд: API, оба вебхука, планировщик напоминаний |
 | `posts.json`, `links.json`, `result.json` | Живые данные — **бэкенд сам коммитит их сюда** через GitHub API |
+| `disc_threads.json` | Кэш привязок «пост канала → тред в группе комментариев» — наполняется автоматически из вебхука (авто-пересылка поста в связанную группу), переживает рестарты |
 | `theology_db_1..3.json` | База теологии для поиска (read-only для бэкенда) |
 | `ru_synodal.json` | Текст Библии для админ-функций |
-| `index.html`, `deeper.html` | Фронтенд радио |
+| `index.html`, `deeper.html` | Фронтенд радио (Оглавление/Радио/План + «Глубже») |
 | `test-link.html` | Ручной тест диплинков |
 | `DEPLOY_CHECKLIST.md` | Короткая памятка проверки после каждого деплоя |
 
@@ -29,6 +30,7 @@
 | `ADMIN_SECRET` ⭐ | Пароль операционных маршрутов (см. раздел Безопасность) |
 | `SUPABASE_URL`, `SUPABASE_KEY` | Таблицы `plan_progress`, `bible_accounts`, `app_state` |
 | `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_BRANCH` | Запись живых данных обратно в этот репозиторий |
+| `GITHUB_THREADS_FILE` | Имя файла кэша тредов «Глубже» (по умолчанию `disc_threads.json`) |
 | `GROQ_API_KEY`, `COHERE_API_KEY` | LLM-анализ и эмбеддинги |
 | `CHANNEL_ID`, `CHANNEL_NAME`, `CHANNEL_LINK` | Канал проекта |
 | `BOT_USERNAME`, `BIBLE_BOT_USERNAME` | Имена ботов для диплинков/web_app-ссылок |
@@ -63,11 +65,24 @@ curl -H "x-admin-secret: $SECRET" https://myradio-rrsk.onrender.com/check_webhoo
 ### 2. Личные данные пользователей
 Мутирующие эндпоинты `/plan/*`, `/state`, `/account/*` проверяют подпись
 Telegram initData (HMAC-SHA256 по `WebAppData`, свежесть `auth_date`) через
-`_require_bible_user` — подменить чужой user_id невозможно. Умышленное
-исключение: `GET /plan/status` — его вызывает виджет другого мини-аппа с другой
-подписью; эндпоинт только читает стрик.
+`_require_bible_user` — подменить чужой user_id невозможно.
 
-### 3. Прочее
+Кросс-мини-аппные read-only эндпоинты `/plan/status` и `/account/status`
+(виджет «План» на вкладке План радио) — **fail-closed**: принимают подпись
+ЛЮБОГО из двух ботов (`_verify_signed_user`: initData библ-аппа → полный
+объект/reset_token; initData радио-аппа → публичный срез: стрик, рекорд,
+лаг, число прочитанных дней; без валидной подписи → `registered:false`).
+Раньше срез отдавался любому, кто знает перебираемый user_id.
+
+### 3. Переход в канал из мини-аппов (iOS same-channel fix)
+`index.html` и `deeper.html` открывают посты канала через
+`openTelegramLink` + ожидание `visibilitychange` (1500 мс). Если апп открыт
+ИЗ ТОГО ЖЕ канала, переход происходит в фоне без видимого сворачивания —
+на iOS лечится `tg.close()` (пост уже открыт за аппом), страховка `openLink`
+через 800 мс; Android/Desktop — прежний `openLink`. Ссылки на другие
+мини-аппы (`/plan`, `/radio`, `/deeper`) идут без фолбэка и без close.
+
+### 4. Прочее
 Вебхуки сверяют secret-token Telegram; на мутациях стоят rate-limit'ы slowapi;
 серверные SSRF-проверки (`_host_is_public`).
 
@@ -126,6 +141,21 @@ Render пересобирает сервис автоматически по п�
 4. Прогнать `DEPLOY_CHECKLIST.md`: startup-логи, оба бота отвечают,
    `/users` открывается, мини-апп сквозняком.
 5. Откат при проблемах: Render → Deploys → Rollback.
+
+## Чек-лист обязательных переменных (Render → Environment)
+
+Без этих переменных отдельные подсистемы молча отключаются (fail-closed):
+- `CHANNEL_ID` пуст → `/verify` отвечает «не подписан» **всему радио-аппу** (экран «Доступ закрыт» у всех);
+- `BIBLE_BOT_TOKEN` пуст → все мутирующие запросы библ-аппа отклоняются (503);
+- `BOT_TOKEN` пуст → радио-виджет «План» отклоняет подписанные запросы → «Сначала открой бота»;
+- `SUPABASE_URL`/`SUPABASE_KEY` пусты → напоминания не работают, прогресс не пишется;
+- `WEBHOOK_SECRET` пуст → **оба вебхука отклоняют все апдейты** (боты молчат).
+
+Быстрая проверка после деплоя:
+```bash
+curl https://myradio-rrsk.onrender.com/bible/status
+# {"ok":true,"bible_bot":"...","supabase":true,...} — supabase:true обязателен
+```
 
 ## Административные команды (личка @mybible_reading_bot)
 
