@@ -1174,12 +1174,14 @@ function showDenied(reason){
   setTimeout(function(){document.getElementById('ls').style.display='none';document.getElementById('ds').classList.add('vis');},450);
 }
 function checkSub(){
+  /* Проверка подписки на канал УДАЛЕНА по решению владельца: апп доступен
+     любому, кто открыл его через Telegram. Гейт /verify остался на сервере
+     только для старых кэшированных клиентов (всегда отвечает allowed:true).
+     Ограничения среды сохранены: вне Telegram и без initData приложению
+     нечего показывать — прогресс и плеер завязаны на Telegram. */
   if(!tg){showDenied('no_telegram');return;}
   if(!tg.initData||tg.initData===''){showDenied('no_data');return;}
-  fetchT(BACKEND+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:tg.initData})})
-    .then(function(r){if(!r.ok)throw new Error();return r.json();})
-    .then(function(d){if(d.allowed)showMain();else showDenied('not_subscribed');})
-    .catch(function(){showDenied('error');});
+  showMain();
 }
 function recheckSub(){
   if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
