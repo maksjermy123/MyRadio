@@ -2790,14 +2790,19 @@ async def sb_get_due(hour: int, minute: int) -> list:
     Теперь используем or=(is.null, neq.today).
     "сегодня" — по МСК: сервер живёт в UTC, и date.today() с 00:00 до 03:00 МСК
     возвращал бы ВЧЕРАШНИЙ день — прочитавшие после полуночи получали бы
-    повторное напоминание тем же утром."""
+    повторное напоминание тем же утром.
+
+    В select ОБЯЗАТЕЛЬНО поле last_read_date: его читает _effective_streak
+    (стрик действителен, только если чтение было сегодня/вчера). Забытый
+    в select поле давал всем напоминаниям стрик 0 («Начни сегодня!»)
+    даже при живой серии."""
     today = datetime.now(MSK).date().isoformat()
     rows = await _sb_fetch_all("plan_progress", {
         "notify_hour_msk": f"eq.{hour}",
         "notify_minute_msk": f"eq.{minute}",
         "notify_on": "eq.true",
         "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
-        "select": "user_id,plan_id,title,streak,start_date,days_done",
+        "select": "user_id,plan_id,title,streak,start_date,days_done,last_read_date",
     })
     return rows if isinstance(rows, list) else []
 
