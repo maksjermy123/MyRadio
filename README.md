@@ -62,6 +62,15 @@ curl -H "x-admin-secret: $SECRET" https://myradio-rrsk.onrender.com/check_webhoo
 Открыты сознательно (read-only / публичные): `/`, `/metadata`, `/verify`,
 `/links/{post_id}`, `/bible/status` и все `/plan/*`.
 
+**Гейт подписки удалён** (решение владельца): мини-апп доступен любому, кто
+открыл его через Telegram. Эндпоинт `/verify` оставлен и всегда отвечает
+`allowed:true` — для совместимости со старыми кэшированными клиентами;
+свежий клиент вообще не вызывает его. Логика гейта (getChatMember,
+статусы, restricted-фикс) — в истории git. При этом mutирующие `/plan/*`,
+`/state`, `/account/*` по-прежнему требуют подпись initData, а чужой
+прогресс не виден никому (`/plan/status` fail-closed, чужой user_id
+отклоняется).
+
 ### 2. Личные данные пользователей
 Мутирующие эндпоинты `/plan/*`, `/state`, `/account/*` проверяют подпись
 Telegram initData (HMAC-SHA256 по `WebAppData`, свежесть `auth_date`) через
