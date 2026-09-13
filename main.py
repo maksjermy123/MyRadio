@@ -1646,57 +1646,15 @@ async def get_metadata(url: str = Query(...)):
 
 @app.post("/verify")
 async def verify(request: VerifyRequest):
-    if not BOT_TOKEN:
-        raise HTTPException(500, "BOT_TOKEN not configured")
-    if not CHANNEL_ID:
-        raise HTTPException(500, "CHANNEL_ID not configured")
-    if not request.init_data:
-        raise HTTPException(403, "Missing init data")
-    payload = verify_telegram_init_data(request.init_data, BOT_TOKEN,
-                                        max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
-    if payload is None:
-        raise HTTPException(403, "Invalid init data")
-    user_id = (payload.get("user") or {}).get("id")
-    if not user_id:
-        raise HTTPException(403, "No user id")
-
-    async with _http(10.0) as client:
-        resp = None
-        for attempt in range(2):
-            resp = await client.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
-                params={"chat_id": CHANNEL_ID, "user_id": user_id})
-            if resp.status_code == 429 and attempt == 0:
-                try:
-                    ra = resp.json().get("parameters", {}).get("retry_after")
-                except Exception:
-                    ra = None
-                if isinstance(ra, int) and 0 < ra <= 2:
-                    await asyncio.sleep(ra)
-                    continue
-            break
-
-    if resp is None:
-        return {"allowed": False, "reason": "no_response"}
-    if resp.status_code != 200:
-        return {"allowed": False, "reason": f"http_{resp.status_code}"}
-    try:
-        data = resp.json()
-    except Exception:
-        return {"allowed": False, "reason": "bad_json"}
-    if not data.get("ok"):
-        return {"allowed": False, "reason": data.get("description", "api_error")}
-    status = data["result"].get("status", "")
-    # «restricted» — участник, которого админ ограничил (например, мут): он
-    # ОСТАЁТСЯ подписчиком (is_member=true), но старый фильтр member/
-    # administrator/creator давал ему ложный отказ и закрывал весь радио-апп,
-    # включая виджет «План». Для member/administrator/creator Telegram может
-    # не присылать is_member — там подписка и так очевидна из статуса.
-    is_member = bool(data["result"].get("is_member",
-                       status in {"member", "administrator", "creator"}))
-    allowed = status in {"member", "administrator", "creator"} or \
-              (status == "restricted" and is_member)
-    return {"allowed": allowed, "status": status}
+    """Проверка подписки на канал УДАЛЕНА по решению владельца: апп доступен
+    любому, кто открыл его через Telegram. Эндпоинт оставлен и ВСЕГДА
+    отвечает allowed:true — для совместимости со старыми кэшированными
+    клиентами, которые ещё вызывают /verify при загрузке (свежий клиент
+    checkSub() к нему не обращается вовсе). Вся бывшая логика (getChatMember,
+    allowed-статусы, restricted-фикс) живёт в истории git до этого коммита —
+    вернуть можно оттуда одним ревертом. Отказы среды (вне Telegram/нет
+    initData) клиент обрабатывает сам, до вызова этого эндпоинта."""
+    return {"allowed": True, "reason": "subscription_check_disabled"}
 
 
 def _verify_webhook_secret(request: Request) -> bool:
