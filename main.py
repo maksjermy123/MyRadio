@@ -3715,7 +3715,14 @@ async def bible_unread(request: Request, body: BibleReadBody):
     streak = row.get("streak", 0)
     last = row.get("last_read_date")
     patch = {"days_done": days_done}
-    if last == today and body.day_number in (row.get("days_done") or []):
+    if not days_done:
+        # Отменён ЕДИНСТВЕННЫЙ прочитанный день: прогресс пуст — стрик и дата
+        # последнего чтения честно обнуляются. Раньше last_read_date оставался
+        # «вчера», и _effective_streak() ещё сутки считал стрик живым —
+        # напоминания показывали «🔥 N дней подряд» без единого прочитанного дня.
+        patch["streak"] = 0
+        patch["last_read_date"] = None
+    elif last == today and body.day_number in (row.get("days_done") or []):
         # Сегодняшнее чтение отменено: восстанавливаем last_read_date как "вчера",
         # а стрик уменьшаем на 1 (не ниже 0). Точное восстановление предыдущего
         # значения невозможно без истории - это честный компромисс.
@@ -4073,17 +4080,64 @@ def _plan_title(u) -> str:
     return "план чтения"
 
 
+def _calendar_day(u: dict) -> int:
+    """Номер календарного дня плана (по МСК). 0 — если start_date битый."""
+    start_raw = u.get("start_date")
+    if not start_raw:
+        return 0
+    from datetime import date
+    try:
+        start = date.fromisoformat(start_raw)
+    except ValueError:
+        return 0
+    return (datetime.now(MSK).date() - start).days + 1
+
+
 def _next_unread_day(calendar_day: int, days_done) -> int:
-    """Тот же алгоритм, что и nextUnreadDay() в мини-аппе: первый день от 1
-    до calendar_day, которого нет среди прочитанных. Раньше сервер считал
-    отставание совсем по другой формуле (см. ниже), из-за чего число в
-    уведомлении и число в мини-аппе могли не совпадать при любых "дырах"
-    в днях (например, если день был отмечен прочитанным не по порядку)."""
-    done = set(days_done or [])
-    for d in range(1, calendar_day + 1):
+    """Позиция чтения — тот же алгоритм, что и nextUnreadDay() в мини-аппе:
+    первый непрочитанный день ВСЕГО плана, а не только до календарного дня.
+    Раньше сканировали диапазон 1..calendar_day и при полном прочтении
+    возвращали calendar_day — из-за этого сервер не видел «чтение наперёд»
+    (прочитал дни 1-10 при 2-м календарном — лаг был 0, как у «на графике»).
+    Теперь сканируем до max(calendar_day, max(days_done)) — прочитанные
+    наперёд дни двигают позицию так же, как в мини-аппе, и числа в
+    уведомлении и в бейдже приложения гарантированно совпадают."""
+    # days_done приходит из Supabase jsonb — дни могут прийти и строками.
+    # Раньше int/str в одном списке роняли max() TypeError'ом (вне try —
+    # весь минутный cron). Приводим аккуратно и молча игнорируем мусор.
+    done = set()
+    for d in (days_done or []):
+        try:
+            done.add(int(d))
+        except (TypeError, ValueError):
+            continue
+    scan_to = max(calendar_day, max(done) if done else 0)
+    for d in range(1, scan_to + 1):
         if d not in done:
             return d
-    return calendar_day
+    return scan_to + 1
+
+
+def _days_ahead(u: dict) -> int:
+    """На сколько дней пользователь ОПЕРЕЖАЕТ график (чтение наперёд).
+    Считаем по фактически отмеченным дням: max(days_done) - calendar_day.
+    Не «протухает» со временем (в отличие от стрика) — отмеченные наперёд
+    дни остаются отмеченными. 0 — если пользователь не впереди или
+    start_date битый."""
+    # Нормализация дней как в _next_unread_day: jsonb может прислать строки,
+    # мусор игнорируем — иначе TypeError вне try роняет весь минутный cron.
+    done = []
+    for d in (u.get("days_done") or []):
+        try:
+            done.append(int(d))
+        except (TypeError, ValueError):
+            continue
+    if not done:
+        return 0
+    calendar_day = _calendar_day(u)
+    if calendar_day <= 0:
+        return 0
+    return max(0, max(done) - calendar_day)
 
 
 def _days_behind(u: dict) -> int:
@@ -4096,15 +4150,9 @@ def _days_behind(u: dict) -> int:
     считается по МСК (как и остальная система напоминаний/cron), а не по
     часовому поясу сервера (обычно UTC на Render), чтобы не расходиться
     с реальным календарным днём около полуночи."""
-    start_raw = u.get("start_date")
-    if not start_raw:
+    calendar_day = _calendar_day(u)
+    if calendar_day <= 0:
         return 0
-    from datetime import date
-    try:
-        start = date.fromisoformat(start_raw)
-    except ValueError:
-        return 0
-    calendar_day = (datetime.now(MSK).date() - start).days + 1
     landing = _next_unread_day(calendar_day, u.get("days_done"))
     return max(0, calendar_day - landing)
 
@@ -4174,6 +4222,7 @@ async def bible_send_reminders():
             continue
         streak = _effective_streak(u)
         lag = _days_behind(u)
+        ahead = _days_ahead(u)
         title = _plan_title(u)
         days_done_n = len(u.get("days_done") or [])
         if days_done_n == 0:
@@ -4196,15 +4245,33 @@ async def bible_send_reminders():
                 body = (f"⏳ «{title}»: ждёт тебя уже {age_days} {_ru_day_word(age_days)}.\n"
                         f"Не обязательно догонять график — просто открой и прочитай один отрывок сегодня.")
         elif lag > 0:
+            # Отстаёт от графика: подсказываем КОНКРЕТНЫЙ день, с которого
+            # продолжать — он совпадает с тем, куда ведёт кнопка «Открыть план»
+            # (позиция чтения = первый непрочитанный день всего плана).
             word = _ru_day_word(lag)
+            resume_day = _next_unread_day(_calendar_day(u), u.get("days_done"))
             body = (
                 f"⚠️ «{title}»: отстаёшь на {lag} {word} от плана чтения.\n"
                 f"Не переживай — пропущенные дни никуда не делись. "
-                f"Открой план и наверстай сразу несколько дней подряд!"
+                f"Открой план и продолжай с дня {resume_day} — можно наверстать сразу несколько дней подряд!"
             )
+        elif ahead > 0:
+            # Читает НАПЕРЁД графика (отметил будущие дни). Раньше такие
+            # пользователи попадали в общую ветку и, как только стрик
+            # «протухал» (не открывал приложение 2+ дня), получали
+            # бессмысленное «Начни сегодня!» — при 10+ прочитанных днях.
+            # Опережение считаем по days_done — оно не «протухает»,
+            # а стрик показываем только если серия ещё жива.
+            ahead_word = _ru_day_word(ahead)
+            streak_text = f"🔥 {streak} дней подряд — так держать!\n" if streak > 0 else ""
+            body = (f"🎯 «{title}»: ты идёшь впереди графика на {ahead} {ahead_word}!\n"
+                    f"{streak_text}Следующий отрывок уже ждёт — продолжай в своём ритме.")
+        elif streak > 0:
+            body = f"📅 «{title}»: время читать Библию\n🔥 {streak} дней подряд"
         else:
-            streak_text = f"🔥 {streak} дней подряд" if streak > 0 else "Начни сегодня!"
-            body = f"📅 «{title}»: время читать Библию\n{streak_text}"
+            # На графике (или чуть впереди), но стрик протух и дни уже
+            # отмечались. «Начни сегодня!» здесь врало — человек УЖЕ начал.
+            body = f"📅 «{title}»: время читать Библию\nСерия прервалась — сегодня хороший день её продолжить!"
         result = await bible_send(
             u["user_id"],
             body,
