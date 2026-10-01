@@ -4140,6 +4140,55 @@ def _days_ahead(u: dict) -> int:
     return max(0, max(done) - calendar_day)
 
 
+async def _self_heal_days_from_state(u: dict) -> None:
+    """Доваривает в canonical plan_progress дни, отметка которых не долетела
+    по /plan/read, но ВИДНА в слепке app_state (клиент пушит состояние через
+    /state отдельным каналом). Сценарий: «Прочитал день N» при просыпающемся
+    Render / обрыве сети — день осел локально и в app_state, но не в
+    plan_progress; напоминания считают только plan_progress и утром
+    ложно сообщают «отстаёшь, продолжай с дня N», стрик обнуляется.
+    Здесь объединяем оба списка (union) и, если слепок знает больше —
+    дописываем недостающие дни в plan_progress. Стрик и last_read_date
+    НЕ трогаем: дату фактического чтения знать нечем, а клиентская
+    очередь дозапишет отметку честным POST /plan/read (union идемпотентен)."""
+    user_id = u.get("user_id")
+    plan_id = u.get("plan_id")
+    if not user_id or not plan_id:
+        return
+    try:
+        st = await sb_state_get(user_id)
+    except Exception:
+        return
+    if not st:
+        return
+    data = st.get("data") or {}
+    prog = (data.get("progress") or {}).get(str(plan_id)) or {}
+    state_days = []
+    for d in (prog.get("daysDone") or []):
+        try:
+            state_days.append(int(d))
+        except (TypeError, ValueError):
+            continue
+    if not state_days:
+        return
+    canonical = []
+    for d in (u.get("days_done") or []):
+        try:
+            canonical.append(int(d))
+        except (TypeError, ValueError):
+            continue
+    missing = [d for d in state_days if d not in set(canonical)]
+    if not missing:
+        return
+    merged = sorted(set(canonical) | set(state_days))
+    try:
+        await sb_patch(user_id, plan_id, {"days_done": merged})
+        u["days_done"] = merged
+        log.info(f"bible self-heal: user_id={user_id} plan={plan_id} — доварены дни {missing} из app_state в plan_progress")
+    except Exception as e:
+        log.warning(f"bible self-heal: user_id={user_id} plan={plan_id} — не удалось дописать дни: {e}")
+
+
 def _days_behind(u: dict) -> int:
     """Сколько дней пользователь отстаёт от графика — используем ТОТ ЖЕ
     подход, что и мини-апп (nextUnreadDay), а не отдельную "агрегатную"
@@ -4220,6 +4269,14 @@ async def bible_send_reminders():
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
             continue
+        # Самолечение: доставить дни из слепка app_state, чей /plan/read не
+        # долетел (см. _self_heal_days_from_state) — ДО расчёта lag/streak,
+        # иначе утреннее напоминание ложно рапортует об отставании по дню,
+        # который пользователь фактически прочитал и отметил.
+        try:
+            await _self_heal_days_from_state(u)
+        except Exception:
+            pass
         streak = _effective_streak(u)
         lag = _days_behind(u)
         ahead = _days_ahead(u)
