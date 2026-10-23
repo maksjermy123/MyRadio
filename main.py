@@ -1635,7 +1635,8 @@ async def root_head():
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "Radio + Deeper Mini App Backend"}
+    return {"status": "ok", "service": "Radio + Deeper Mini App Backend",
+            "build": "catchup-2026-10-23"}
 
 
 @app.get("/metadata")
@@ -2605,6 +2606,17 @@ async def bible_scheduler_startup():
     # обычно уже заполнены.
     _WARMUP_TASK = asyncio.create_task(_warmup_data())
     bible_scheduler.start()
+    # Догоняющая рассылка после сна/рестарта (Render free tier): процесс
+    # проснулся — доставляем напоминания, чьё время прошло, пока сервис
+    # был неактивен. Фоном и с задержкой: сбой догоняния не должен влиять
+    # на старт сервиса и первые ответы.
+    async def _catchup_after_wake():
+        try:
+            await asyncio.sleep(3)
+            await bible_catchup_missed(datetime.now(MSK))
+        except Exception as e:
+            log.error(f"catchup after startup failed: {e!r}")
+    asyncio.create_task(_catchup_after_wake())
 
 @app.on_event("shutdown")
 async def bible_http_client_shutdown():
@@ -4251,6 +4263,67 @@ async def _disable_reminders_for_blocked_user(user_id: int) -> None:
     )
     log.info(f"bible: user_id={user_id} — 403 от Telegram (бот заблокирован), напоминания отключены для всех его планов")
 
+def _build_reminder_body(u: dict):
+    """Текст напоминания для одной строки plan_progress. Возвращает None,
+    если напоминать рано (план создан сегодня). Вынесено из
+    bible_send_reminders, чтобы догоняющая рассылка bible_catchup_missed
+    писала ровно те же тексты — вторая копия этого кода неизбежно
+    разъехалась бы с первой."""
+    streak = _effective_streak(u)
+    lag = _days_behind(u)
+    ahead = _days_ahead(u)
+    title = _plan_title(u)
+    days_done_n = len(u.get("days_done") or [])
+    if days_done_n == 0:
+        # План выбран, но не прочитано НИ ОДНОГО дня. Раньше такие
+        # получали обычное "время читать" (lag=0, streak=0) — и это
+        # выглядело как ошибка системы ("я же ещё не начинал!").
+        # Теперь — мягкая онбординг-цепочка: день 1 после старта,
+        # затем каждые 2 дня, пока человек не начнёт. Тексты дружелюбные,
+        # без давления: цель — побудить к ПЕРВОМУ шагу.
+        age_days = _plan_age_days(u)
+        if age_days <= 0:
+            return None  # план создан сегодня — ещё рано напоминать
+        if age_days == 1:
+            body = (f"🌱 «{title}»: план готов и ждёт тебя!\n"
+                    f"Первый день — самый лёгкий. Открой план и прочитай первый отрывок — это займёт пару минут.")
+        elif age_days <= 3:
+            body = (f"📖 «{title}»: ты выбрал план, но ещё не начал.\n"
+                    f"Начни с малого — один отрывок сегодня, и дальше пойдёт легче!")
+        else:
+            body = (f"⏳ «{title}»: ждёт тебя уже {age_days} {_ru_day_word(age_days)}.\n"
+                    f"Не обязательно догонять график — просто открой и прочитай один отрывок сегодня.")
+    elif lag > 0:
+        # Отстаёт от графика: подсказываем КОНКРЕТНЫЙ день, с которого
+        # продолжать — он совпадает с тем, куда ведёт кнопка «Открыть план»
+        # (позиция чтения = первый непрочитанный день всего плана).
+        word = _ru_day_word(lag)
+        resume_day = _next_unread_day(_calendar_day(u), u.get("days_done"))
+        body = (
+            f"⚠️ «{title}»: отстаёшь на {lag} {word} от плана чтения.\n"
+            f"Не переживай — пропущенные дни никуда не делись. "
+            f"Открой план и продолжай с дня {resume_day} — можно наверстать сразу несколько дней подряд!"
+        )
+    elif ahead > 0:
+        # Читает НАПЕРЁД графика (отметил будущие дни). Раньше такие
+        # пользователи попадали в общую ветку и, как только стрик
+        # «протухал» (не открывал приложение 2+ дня), получали
+        # бессмысленное «Начни сегодня!» — при 10+ прочитанных днях.
+        # Опережение считаем по days_done — оно не «протухает»,
+        # а стрик показываем только если серия ещё жива.
+        ahead_word = _ru_day_word(ahead)
+        streak_text = f"🔥 {streak} дней подряд — так держать!\n" if streak > 0 else ""
+        body = (f"🎯 «{title}»: ты идёшь впереди графика на {ahead} {ahead_word}!\n"
+                f"{streak_text}Следующий отрывок уже ждёт — продолжай в своём ритме.")
+    elif streak > 0:
+        body = f"📅 «{title}»: время читать Библию\n🔥 {streak} дней подряд"
+    else:
+        # На графике (или чуть впереди), но стрик протух и дни уже
+        # отмечались. «Начни сегодня!» здесь врало — человек УЖЕ начал.
+        body = f"📅 «{title}»: время читать Библию\nСерия прервалась — сегодня хороший день её продолжить!"
+    return body
+
+
 @bible_scheduler.scheduled_job("cron", minute="*", max_instances=1,
                                misfire_grace_time=30, coalesce=True)
 async def bible_send_reminders():
@@ -4277,58 +4350,9 @@ async def bible_send_reminders():
             await _self_heal_days_from_state(u)
         except Exception:
             pass
-        streak = _effective_streak(u)
-        lag = _days_behind(u)
-        ahead = _days_ahead(u)
-        title = _plan_title(u)
-        days_done_n = len(u.get("days_done") or [])
-        if days_done_n == 0:
-            # План выбран, но не прочитано НИ ОДНОГО дня. Раньше такие
-            # получали обычное "время читать" (lag=0, streak=0) — и это
-            # выглядело как ошибка системы ("я же ещё не начинал!").
-            # Теперь — мягкая онбординг-цепочка: день 1 после старта,
-            # затем каждые 2 дня, пока человек не начнёт. Тексты дружелюбные,
-            # без давления: цель — побудить к ПЕРВОМУ шагу.
-            age_days = _plan_age_days(u)
-            if age_days <= 0:
-                continue  # план создан сегодня — ещё рано напоминать
-            if age_days == 1:
-                body = (f"🌱 «{title}»: план готов и ждёт тебя!\n"
-                        f"Первый день — самый лёгкий. Открой план и прочитай первый отрывок — это займёт пару минут.")
-            elif age_days <= 3:
-                body = (f"📖 «{title}»: ты выбрал план, но ещё не начал.\n"
-                        f"Начни с малого — один отрывок сегодня, и дальше пойдёт легче!")
-            else:
-                body = (f"⏳ «{title}»: ждёт тебя уже {age_days} {_ru_day_word(age_days)}.\n"
-                        f"Не обязательно догонять график — просто открой и прочитай один отрывок сегодня.")
-        elif lag > 0:
-            # Отстаёт от графика: подсказываем КОНКРЕТНЫЙ день, с которого
-            # продолжать — он совпадает с тем, куда ведёт кнопка «Открыть план»
-            # (позиция чтения = первый непрочитанный день всего плана).
-            word = _ru_day_word(lag)
-            resume_day = _next_unread_day(_calendar_day(u), u.get("days_done"))
-            body = (
-                f"⚠️ «{title}»: отстаёшь на {lag} {word} от плана чтения.\n"
-                f"Не переживай — пропущенные дни никуда не делись. "
-                f"Открой план и продолжай с дня {resume_day} — можно наверстать сразу несколько дней подряд!"
-            )
-        elif ahead > 0:
-            # Читает НАПЕРЁД графика (отметил будущие дни). Раньше такие
-            # пользователи попадали в общую ветку и, как только стрик
-            # «протухал» (не открывал приложение 2+ дня), получали
-            # бессмысленное «Начни сегодня!» — при 10+ прочитанных днях.
-            # Опережение считаем по days_done — оно не «протухает»,
-            # а стрик показываем только если серия ещё жива.
-            ahead_word = _ru_day_word(ahead)
-            streak_text = f"🔥 {streak} дней подряд — так держать!\n" if streak > 0 else ""
-            body = (f"🎯 «{title}»: ты идёшь впереди графика на {ahead} {ahead_word}!\n"
-                    f"{streak_text}Следующий отрывок уже ждёт — продолжай в своём ритме.")
-        elif streak > 0:
-            body = f"📅 «{title}»: время читать Библию\n🔥 {streak} дней подряд"
-        else:
-            # На графике (или чуть впереди), но стрик протух и дни уже
-            # отмечались. «Начни сегодня!» здесь врало — человек УЖЕ начал.
-            body = f"📅 «{title}»: время читать Библию\nСерия прервалась — сегодня хороший день её продолжить!"
+        body = _build_reminder_body(u)
+        if body is None:
+            continue
         result = await bible_send(
             u["user_id"],
             body,
@@ -4339,8 +4363,106 @@ async def bible_send_reminders():
             await _disable_reminders_for_blocked_user(u["user_id"])
       except Exception as e:
         log.error(f"reminder failed for {u.get('user_id')}/{u.get('plan_id')}: {e}")
+    # Догоняющая рассылка пропущенного (см. bible_catchup_missed): страховка
+    # от тиков, пропущенных при живом процессе, и от планов, зарегистрированных
+    # уже ПОСЛЕ своего времени сегодня.
+    try:
+        await bible_catchup_missed(now_msk, mark_late=False)
+    except Exception as e:
+        log.error(f"catchup in tick failed: {e!r}")
     # Онбординг-напоминания тем, кто нажал «Старт», но так и не выбрал план.
     await bible_send_onboarding_nudges(now_msk)
+
+
+# ── Догоняющая рассылка пропущенных напоминаний ──────────────────────────
+# Render free tier засыпает без входящего трафика (~15 минут тишины), а
+# планировщик живёт ВНУТРИ процесса сервиса: пока процесс спит, минутные
+# тики не происходят вовсе, и напоминания, чьё время пришлось на сон,
+# терялись молча (реальный кейс: хронологический план на 8:00 приходил —
+# владелец как раз открывал приложение, а аудиоплан на 9:00-10:00 — нет:
+# сервис уже спал; монитор UptimeRobot при этом оставался «зелёным»,
+# потому что будил не тот URL). Лечится вызовами bible_catchup_missed:
+#   1) на старте процесса (каждое пробуждение/деплой = свежий запуск);
+#   2) в конце каждого минутного тика bible_send_reminders.
+CATCHUP_WINDOW_MIN = 180  # пропуски старше 3 часов не догоняем — будить человека вечером утренним напоминанием вредно
+
+
+async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
+    """Доставить напоминания, чьё время уже прошло сегодня, но которые так
+    и не были отправлены. Правила:
+    - окно CATCHUP_WINDOW_MIN минут: более старые пропуски сгорают;
+    - «уже отправлено сегодня» проверяется по last_reminder_sent_at
+      (метка >= начала сегодняшних суток по МСК => пропускаем), поэтому
+      повторов не будет ни при каком числе пробуждений/деплоев;
+    - отправка идёт через тот же _claim_reminder_slot (атомарный claim на
+      уровне БД) — гонки между догоняющей и обычной рассылкой безопасны;
+    - текст строит та же _build_reminder_body, что и обычная рассылка;
+    - mark_late=True (старт процесса): добавляется честная пометка о
+      задержке, чтобы позднее напоминание не выглядело загадкой. В минутном
+      тике пометка не нужна (там задержки измеряются минутами)."""
+    if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
+        return 0
+    today = now_msk.date().isoformat()
+    today_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+    now_min = now_msk.hour * 60 + now_msk.minute
+    rows = await _sb_fetch_all("plan_progress", {
+        "notify_on": "eq.true",
+        "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
+        "select": ("user_id,plan_id,title,streak,start_date,days_done,"
+                   "last_read_date,last_reminder_sent_at,"
+                   "notify_hour_msk,notify_minute_msk"),
+    })
+    if not isinstance(rows, list):
+        return 0
+    now_iso = now_msk.isoformat()
+    cutoff_iso = (now_msk - timedelta(seconds=55)).isoformat()
+    sent_n = 0
+    blocked_this_run = set()
+    for u in rows:
+      try:
+        try:
+            h = int(u.get("notify_hour_msk") or 0)
+            m = int(u.get("notify_minute_msk") or 0)
+        except (TypeError, ValueError):
+            continue
+        late_min = now_min - (h * 60 + m)
+        if late_min < 0 or late_min > CATCHUP_WINDOW_MIN:
+            continue
+        raw_sent = u.get("last_reminder_sent_at")
+        if raw_sent:
+            try:
+                sent_at = _as_aware(datetime.fromisoformat(str(raw_sent).replace("Z", "+00:00")))
+                if sent_at >= today_start:
+                    continue  # сегодня уже отправляли — обычным тиком или прошлым пробуждением
+            except Exception:
+                pass
+        claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
+        if not claimed:
+            continue
+        try:
+            await _self_heal_days_from_state(u)
+        except Exception:
+            pass
+        body = _build_reminder_body(u)
+        if body is None:
+            continue
+        if mark_late and late_min > 3:
+            body += (f"\n\n⏱ Доставлено с опозданием на {late_min} мин — "
+                     f"сервер был неактивен и проснулся позже.")
+        result = await bible_send(
+            u["user_id"],
+            body,
+            bible_reminder_button(u["plan_id"]),
+        )
+        sent_n += 1
+        if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
+            blocked_this_run.add(u["user_id"])
+            await _disable_reminders_for_blocked_user(u["user_id"])
+      except Exception as e:
+        log.error(f"catchup failed for {u.get('user_id')}/{u.get('plan_id')}: {e}")
+    if sent_n:
+        log.info(f"catchup: доставлено {sent_n} пропущенных напоминаний")
+    return sent_n
 
 
 def _plan_age_days(u: dict) -> int:
