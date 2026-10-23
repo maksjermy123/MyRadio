@@ -1629,6 +1629,34 @@ async def handle_user_message(message: dict):
 # ЭНДПОИНТЫ
 # ═══════════════════════════════════════════════════
 
+# Маркер сборки: виден в / и в /diag/plans — по нему удалённо проверяем,
+# что Render задеплоил именно эту ревизию (кэш/сон/не тот URL и т.п.).
+BUILD_MARKER = "catchup-diag-2026-10-23"
+
+# Сердцебиение планировщика (in-memory, живёт и умирает вместе с процессом).
+# Назначение — УДАЛЁННО ответить на вопрос «а тикает ли планировщик вообще?»:
+# Render free tier засыпает без трафика, и тогда tick_count перестаёт расти.
+# Плюс счётчики отправленных/пропущенных напоминаний — видно всю цепочку:
+# тик был -> строки выбраны -> слот застолблен -> отправлено (или причина
+# пропуска). ТОЛЬКО агрегаты: ни user_id, ни текстов здесь нет.
+# ВНИМАНИЕ: MSK (ZoneInfo Europe/Moscow) определён только в разделе Библии
+# ниже по файлу, поэтому started_at здесь — UTC; /diag/plans отдаёт его как
+# есть, а всё остальное время (last_tick_at и т.д.) уже по МСК.
+_DIAG = {
+    "started_at": datetime.now(timezone.utc).isoformat(),
+    "started_at_tz": "UTC",
+    "tick_count": 0,          # сколько минутных тиков произошло с старта процесса
+    "last_tick_at": None,     # ISO МСК последнего тика
+    "last_tick_due": None,    # сколько due-строк выбрал последний тик
+    "catchup_runs": 0,        # сколько запусков догоняющей рассылки
+    "last_catchup_at": None,
+    "last_catchup_sent": 0,
+    "reminders_sent_total": 0,
+    "last_sent_at": None,
+    "skip_not_claimed": 0,    # слот уже застолблен другим тиком/забегом
+    "skip_body_none": 0,      # текст напоминания не построен (после фикса дня 0 — редкость)
+}
+
 @app.head("/")
 async def root_head():
     return Response(status_code=200)
@@ -1636,7 +1664,56 @@ async def root_head():
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "Radio + Deeper Mini App Backend",
-            "build": "catchup-2026-10-23"}
+            "build": BUILD_MARKER}
+
+
+@app.get("/diag/plans")
+@limiter.limit("30/minute")
+async def diag_plans(request: Request):
+    """АГРЕГАТНАЯ диагностика напоминаний — без персональных данных.
+    Отдаёт по каждому plan_id только счётчики: сколько строк, сколько с
+    включёнными напоминаниями, какие времена (МСК), сколько отметили день
+    сегодня, сколько получили слот отправки сегодня, сколько созданы сегодня.
+    Плюс сердцебиение планировщика _DIAG (жив ли минутный тик — не спит ли
+    Render). user_id, title, days_done и прочие персональные данные
+    НАМОЕРЕННО не отдаются: эндпоинт публичный, а ответы на вопросы
+    «создалась ли строка / почему тихо» не требуют личности."""
+    if not SUPABASE_URL:
+        return {"ok": True, "build": BUILD_MARKER,
+                "now_msk": datetime.now(MSK).isoformat(),
+                "process": _DIAG, "plans": {"_note": "SUPABASE_URL не задан"}}
+    today = _msk_today_iso()
+    rows = await _sb_fetch_all("plan_progress", {
+        "select": ("plan_id,notify_on,notify_hour_msk,notify_minute_msk,"
+                   "start_date,last_read_date,last_reminder_sent_at"),
+    })
+    plans = {}
+    if isinstance(rows, list):
+        for r in rows:
+            pid = str(r.get("plan_id") or "?")
+            a = plans.setdefault(pid, {"rows": 0, "notify_on": 0, "times_msk": [],
+                                       "read_today": 0, "claim_today": 0,
+                                       "created_today": 0})
+            a["rows"] += 1
+            if r.get("notify_on") is True:
+                a["notify_on"] += 1
+            try:
+                t = f"{int(r.get('notify_hour_msk')):02d}:{int(r.get('notify_minute_msk')):02d}"
+                if t not in a["times_msk"]:
+                    a["times_msk"].append(t)
+            except (TypeError, ValueError):
+                pass
+            if str(r.get("last_read_date") or "")[:10] == today:
+                a["read_today"] += 1
+            if str(r.get("last_reminder_sent_at") or "")[:10] == today:
+                a["claim_today"] += 1
+            if str(r.get("start_date") or "")[:10] == today:
+                a["created_today"] += 1
+    for a in plans.values():
+        a["times_msk"].sort()
+    return {"ok": True, "build": BUILD_MARKER,
+            "now_msk": datetime.now(MSK).isoformat(),
+            "process": _DIAG, "plans": plans}
 
 
 @app.get("/metadata")
@@ -4282,9 +4359,17 @@ def _build_reminder_body(u: dict):
         # затем каждые 2 дня, пока человек не начнёт. Тексты дружелюбные,
         # без давления: цель — побудить к ПЕРВОМУ шагу.
         age_days = _plan_age_days(u)
-        if age_days <= 0:
-            return None  # план создан сегодня — ещё рано напоминать
-        if age_days == 1:
+        # День 0: план создан сегодня. Раньше здесь был return None —
+        # «ещё рано напоминать». На деле это МОЛЧА убивало напоминание,
+        # время которого пользователь сам назначил на сегодня: удалил
+        # и заново зарегистрировал план (или впервые выбрал время позже
+        # текущего момента) — тик в назначенную минуту честно выбирал
+        # строку, застолбивал слот отправки и... не отправлял ничего.
+        # Со стороны выглядело ровно как «уведомления не работают»
+        # (реальный кейс 23.10.2026: пересоздание аудиоплана + ожидание).
+        # Теперь день 0 получает тот же мягкий онбординг-текст, что и
+        # день 1: ожидание пользователя, назначившего время, законно.
+        if age_days <= 1:
             body = (f"🌱 «{title}»: план готов и ждёт тебя!\n"
                     f"Первый день — самый лёгкий. Открой план и прочитай первый отрывок — это займёт пару минут.")
         elif age_days <= 3:
@@ -4333,6 +4418,9 @@ async def bible_send_reminders():
     now_iso = now_msk.isoformat()
     cutoff_iso = (now_msk - timedelta(seconds=55)).isoformat()
     users = await sb_get_due(now_msk.hour, now_msk.minute)
+    _DIAG["tick_count"] += 1
+    _DIAG["last_tick_at"] = now_iso
+    _DIAG["last_tick_due"] = len(users) if isinstance(users, list) else -1
     blocked_this_run = set()  # не бить по Supabase повторно, если у юзера несколько планов на одну минуту
     for u in users:
       # Сбой на ОДНОМ пользователе (таймаут Supabase, битая строка) не должен
@@ -4341,6 +4429,7 @@ async def bible_send_reminders():
       try:
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
+            _DIAG["skip_not_claimed"] += 1
             continue
         # Самолечение: доставить дни из слепка app_state, чей /plan/read не
         # долетел (см. _self_heal_days_from_state) — ДО расчёта lag/streak,
@@ -4352,12 +4441,17 @@ async def bible_send_reminders():
             pass
         body = _build_reminder_body(u)
         if body is None:
+            _DIAG["skip_body_none"] += 1
+            log.warning(f"reminder: текст не построен, пропуск {u.get('user_id')}/{u.get('plan_id')}")
             continue
         result = await bible_send(
             u["user_id"],
             body,
             bible_reminder_button(u["plan_id"]),
         )
+        if result.get("ok"):
+            _DIAG["reminders_sent_total"] += 1
+            _DIAG["last_sent_at"] = now_iso
         if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
             blocked_this_run.add(u["user_id"])
             await _disable_reminders_for_blocked_user(u["user_id"])
@@ -4402,6 +4496,8 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
       тике пометка не нужна (там задержки измеряются минутами)."""
     if not SUPABASE_URL or not BIBLE_BOT_TOKEN:
         return 0
+    _DIAG["catchup_runs"] += 1
+    _DIAG["last_catchup_at"] = now_msk.isoformat()
     today = now_msk.date().isoformat()
     today_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
     now_min = now_msk.hour * 60 + now_msk.minute
@@ -4438,6 +4534,7 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
                 pass
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
         if not claimed:
+            _DIAG["skip_not_claimed"] += 1
             continue
         try:
             await _self_heal_days_from_state(u)
@@ -4445,6 +4542,7 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
             pass
         body = _build_reminder_body(u)
         if body is None:
+            _DIAG["skip_body_none"] += 1
             continue
         if mark_late and late_min > 3:
             body += (f"\n\n⏱ Доставлено с опозданием на {late_min} мин — "
@@ -4455,11 +4553,15 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
             bible_reminder_button(u["plan_id"]),
         )
         sent_n += 1
+        if result.get("ok"):
+            _DIAG["reminders_sent_total"] += 1
+            _DIAG["last_sent_at"] = now_iso
         if result.get("error_code") == 403 and u["user_id"] not in blocked_this_run:
             blocked_this_run.add(u["user_id"])
             await _disable_reminders_for_blocked_user(u["user_id"])
       except Exception as e:
         log.error(f"catchup failed for {u.get('user_id')}/{u.get('plan_id')}: {e}")
+    _DIAG["last_catchup_sent"] = sent_n
     if sent_n:
         log.info(f"catchup: доставлено {sent_n} пропущенных напоминаний")
     return sent_n
