@@ -4443,6 +4443,13 @@ async def bible_send_reminders():
         if body is None:
             _DIAG["skip_body_none"] += 1
             log.warning(f"reminder: текст не построен, пропуск {u.get('user_id')}/{u.get('plan_id')}")
+            # Освобождаем слот, чтобы застолбленная минута не выглядела
+            # «уже отправлено» для догоняющей рассылки (после фикса дня 0
+            # ветка практически мертва — страховка на будущее).
+            try:
+                await sb_patch(u["user_id"], u["plan_id"], {"last_reminder_sent_at": None})
+            except Exception:
+                pass
             continue
         result = await bible_send(
             u["user_id"],
@@ -4529,7 +4536,37 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
             try:
                 sent_at = _as_aware(datetime.fromisoformat(str(raw_sent).replace("Z", "+00:00")))
                 if sent_at >= today_start:
-                    continue  # сегодня уже отправляли — обычным тиком или прошлым пробуждением
+                    # Клейм в течение сегодняшних суток. Но он может быть
+                    # «отравленным» старым кодом: план, созданный СЕГОДНЯ с
+                    # пустым days_done, до фикса 23.10.2026 НИКОГДА не
+                    # получал отправку — тело возвращало None («рано
+                    # напоминать») ПОСЛЕ застолбления слота, и клейм без
+                    # отправки блокировал догоняющую рассылку до конца дня
+                    # (выглядело как «уведомление не пришло»; реальный кейс:
+                    # пересоздание аудиоплана 23.10.2026, время 11:42).
+                    # Для такой строки (создана сегодня И ничего не
+                    # отмечено) клейм сегодня мог быть только отравленным —
+                    # старый код день-0 не отправлял никогда. Освобождаем
+                    # слот ОДНОКРАТНО: после отправки/прочтения строка либо
+                    # получит свежий клейм, либо отфильтруется запросом.
+                    # Ложное срабатывание возможно лишь если НОВЫЙ код уже
+                    # легитимно отправил день-0 напоминание, а процесс
+                    # перезапустился до конца дня (деплой) — цена: одно
+                    # повторное напоминание с пометкой об опоздании.
+                    if (str(u.get("start_date") or "")[:10] == today
+                            and not (u.get("days_done") or [])):
+                        try:
+                            await sb_patch(u["user_id"], u["plan_id"],
+                                           {"last_reminder_sent_at": None})
+                            u["last_reminder_sent_at"] = None
+                            log.info(f"catchup: освобождён отравленный слот дня 0 "
+                                     f"для {u.get('user_id')}/{u.get('plan_id')}")
+                        except Exception as e:
+                            log.warning(f"catchup: не удалось освободить слот дня 0 "
+                                        f"{u.get('user_id')}/{u.get('plan_id')}: {e!r}")
+                            continue
+                    else:
+                        continue  # сегодня уже отправляли — обычным тиком или прошлым пробуждением
             except Exception:
                 pass
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
