@@ -24,3 +24,4 @@ jobs:
           code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 https://myradio-rrsk.onrender.com/)
           echo "HTTP $code at $(date -u +%FT%TZ)"
           test "$code" = "200"
+# schedule re-registered: 2026-10-23 15:05 UTC (workaround: cron не стартовал после первой заливки)
