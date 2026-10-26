@@ -1631,7 +1631,7 @@ async def handle_user_message(message: dict):
 
 # Маркер сборки: виден в / и в /diag/plans — по нему удалённо проверяем,
 # что Render задеплоил именно эту ревизию (кэш/сон/не тот URL и т.п.).
-BUILD_MARKER = "day0-revert-2026-10-23"
+BUILD_MARKER = "notify-tz-2026-10-23"
 
 # Сердцебиение планировщика (in-memory, живёт и умирает вместе с процессом).
 # Назначение — УДАЛЁННО ответить на вопрос «а тикает ли планировщик вообще?»:
@@ -1685,7 +1685,8 @@ async def diag_plans(request: Request):
     today = _msk_today_iso()
     rows = await _sb_fetch_all("plan_progress", {
         "select": ("plan_id,notify_on,notify_hour_msk,notify_minute_msk,"
-                   "start_date,last_read_date,last_reminder_sent_at"),
+                   "start_date,last_read_date,last_reminder_sent_at"
+                   + _notify_tz_select()),
     })
     plans = {}
     if isinstance(rows, list):
@@ -1699,6 +1700,8 @@ async def diag_plans(request: Request):
                 a["notify_on"] += 1
             try:
                 t = f"{int(r.get('notify_hour_msk')):02d}:{int(r.get('notify_minute_msk')):02d}"
+                if r.get("notify_tz"):
+                    t += "@" + str(r["notify_tz"])
                 if t not in a["times_msk"]:
                     a["times_msk"].append(t)
             except (TypeError, ValueError):
@@ -2823,35 +2826,102 @@ async def sb_patch(user_id: int, plan_id: str, payload: dict) -> bool:
         raise HTTPException(status_code=503, detail="storage unavailable")
     return True
 
-async def sb_get_due(hour: int, minute: int) -> list:
-    """Точное совпадение часа И минуты — раньше проверялся только час
-    (notify_hour_msk), поэтому время вроде 8:37 фактически округлялось
-    до ближайшего часа. notify_minute_msk по умолчанию 0, поэтому все
-    пользователи, ещё не задававшие точное время, продолжают получать
-    напоминание ровно в начале часа — поведение для них не меняется.
+# ── v1.5.6 / notify-tz: напоминания по поясу пользователя ──────────────
+# Время напоминания хранится как НАСТЕННОЕ в поясе пользователя: колонка
+# notify_tz = IANA-имя ("Europe/Helsinki"), NULL = Europe/Moscow (легаси —
+# ровно прежнее поведение). Колонку добавляет владелец одним ALTER TABLE в
+# Supabase; чтобы деплой бэкенда не ломал register и минутный тик ДО
+# выполнения SQL, наличие колонки проверяем запросом и кэшируем: пока её
+# нет — работаем по-старому; после SQL фича включается сама (<=10 мин).
+_NOTIFY_TZ = {"ok": False, "checked_at": 0.0}
+_NOTIFY_TZ_TTL = 600.0  # сек; отрицательный результат перепроверяем
 
-    ВАЖНО: PostgREST-оператор neq НЕ матчит NULL. Раньше фильтр был просто
-    last_read_date=neq.{today}, и планы, которые НИ РАЗУ не читали
-    (last_read_date IS NULL), полностью выпадали из выборки — такие
-    пользователи никогда не получали ежедневное напоминание.
-    Теперь используем or=(is.null, neq.today).
-    "сегодня" — по МСК: сервер живёт в UTC, и date.today() с 00:00 до 03:00 МСК
-    возвращал бы ВЧЕРАШНИЙ день — прочитавшие после полуночи получали бы
-    повторное напоминание тем же утром.
+def _notify_tz_select() -> str:
+    """Добавка к select= для запросов, читающих пояс пользователя."""
+    return ",notify_tz" if _NOTIFY_TZ["ok"] else ""
 
-    В select ОБЯЗАТЕЛЬНО поле last_read_date: его читает _effective_streak
-    (стрик действителен, только если чтение было сегодня/вчера). Забытый
-    в select поле давал всем напоминаниям стрик 0 («Начни сегодня!»)
-    даже при живой серии."""
-    today = datetime.now(MSK).date().isoformat()
+async def _notify_tz_available() -> bool:
+    if not SUPABASE_URL:
+        return False
+    now_m = time.monotonic()
+    if now_m - _NOTIFY_TZ["checked_at"] <= _NOTIFY_TZ_TTL:
+        return _NOTIFY_TZ["ok"]
+    try:
+        r = await HTTP_CLIENT.get(
+            f"{SUPABASE_URL}/rest/v1/plan_progress",
+            headers=SB_HEADERS,
+            params={"select": "notify_tz", "limit": "1"},
+        )
+        _NOTIFY_TZ["ok"] = (r.status_code == 200)
+    except Exception:
+        _NOTIFY_TZ["ok"] = False
+    _NOTIFY_TZ["checked_at"] = now_m
+    if _NOTIFY_TZ["ok"]:
+        log.info("notify_tz: колонка доступна — напоминания по поясу пользователя (DST автоматически)")
+    else:
+        log.warning("notify_tz: колонка недоступна (не выполнен ALTER TABLE?) — легаси-режим МСК")
+    return _NOTIFY_TZ["ok"]
+
+def _row_tz(u: dict) -> ZoneInfo:
+    """Пояс строки plan_progress: notify_tz (IANA) либо Europe/Moscow для
+    легаси-строк и легаси-режима. ZoneInfo кэширует зоны внутри себя, так
+    что вызов на каждую строку каждую минуту дёшев."""
+    name = (u.get("notify_tz") or "").strip() if isinstance(u, dict) else ""
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return MSK
+
+def _row_is_due_now(u: dict, now_utc: datetime) -> bool:
+    """Уходит ли напоминание этой строки В ЭТУ МИНУТУ: настенный час/минута
+    в поясе строки совпали с текущими + план ещё не прочитан сегодня (по
+    поясу строки). NULL-время не матчится никогда — как SQL eq. в прежнем
+    sb_get_due. Чистая функция — покрыта тестом test_notify_tz.py."""
+    if u.get("notify_hour_msk") is None or u.get("notify_minute_msk") is None:
+        return False
+    try:
+        now_local = now_utc.astimezone(_row_tz(u))
+    except Exception:
+        return False
+    if (now_local.hour, now_local.minute) != (int(u["notify_hour_msk"]), int(u["notify_minute_msk"])):
+        return False
+    return (u.get("last_read_date") or "")[:10] != now_local.date().isoformat()
+
+async def sb_get_due(now_utc: datetime) -> list:
+    """Кандидаты на отправку «прямо сейчас».
+
+    ИСТОРИЯ: раньше время хранилось как МСК-час/минута и фильтрация шла
+    в SQL (notify_hour_msk=eq.{hour} AND notify_minute_msk=eq.{minute};
+    точное совпадение часа И минуты пришло вместо одного часа — время
+    вроде 8:37 округлялось до ближайшего часа). PostgREST-оператор neq НЕ
+    матчит NULL: фильтр last_read_date обязан быть or=(is.null, neq.today),
+    иначе планы, которые НИ РАЗУ не читали (last_read_date IS NULL),
+    выпадали из выборки и никогда не получали напоминание.
+
+    v1.5.6: время настенное В ПОЯСЕ ПОЛЬЗОВАТЕЛЯ (notify_tz), поэтому
+    «сейчас ли у него HH:MM» в SQL не выразить — забираем все notify_on=true
+    и фильтруем в Python (_row_is_due_now). Объём тот же, что уже каждую
+    минуту гоняет догоняющая рассылка. «Сегодня» для проверки «уже
+    прочитано» — по поясу СТРОКИ, а не по МСК: сервер живёт в UTC, и
+    календарная дата пользователя не обязана совпадать с московской.
+
+    В select ОБЯЗАТЕЛЬНО last_read_date (его читает _effective_streak —
+    забытый в select поле давал всем стрик 0) и notify-поля (их матчит
+    _row_is_due_now)."""
+    if not SUPABASE_URL:
+        return []
+    await _notify_tz_available()  # обновляем кэш наличия колонки (раз в 10 мин)
     rows = await _sb_fetch_all("plan_progress", {
-        "notify_hour_msk": f"eq.{hour}",
-        "notify_minute_msk": f"eq.{minute}",
         "notify_on": "eq.true",
-        "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
-        "select": "user_id,plan_id,title,streak,start_date,days_done,last_read_date",
+        "select": ("user_id,plan_id,title,streak,start_date,days_done,"
+                   "last_read_date,notify_hour_msk,notify_minute_msk"
+                   + _notify_tz_select()),
     })
-    return rows if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return []
+    return [u for u in rows if _row_is_due_now(u, now_utc)]
 
 async def _sb_count(client: httpx.AsyncClient, extra_params: dict) -> int:
     """Считает строки в plan_progress через PostgREST Prefer: count=exact —
@@ -3542,8 +3612,16 @@ class BibleRegisterBody(BaseModel):
     user_id: int
     plan_id: str = Field(max_length=64)
     title: Optional[str] = Field(default=None, max_length=120)
-    notify_hour_msk: int = Field(default=8, ge=0, le=23)
-    notify_minute_msk: int = Field(default=0, ge=0, le=59)
+    # Легаси-поля (старые клиенты): время трактуется как МСК, как раньше.
+    notify_hour_msk: Optional[int] = Field(default=None, ge=0, le=23)
+    notify_minute_msk: Optional[int] = Field(default=None, ge=0, le=59)
+    # v1.5.6: локальное время пользователя + IANA-пояс его устройства.
+    # Переходы зима/лето бэкенд учитывает сам (zoneinfo, см. _row_tz).
+    # Колонки *_msk при этом переосмыслены: «настенное время в поясе
+    # notify_tz» (NULL пояса = Europe/Moscow) — схема БД не расширялась.
+    notify_hour: Optional[int] = Field(default=None, ge=0, le=23)
+    notify_minute: Optional[int] = Field(default=None, ge=0, le=59)
+    notify_tz: Optional[str] = Field(default=None, max_length=64)
     notify_on: bool = True
     init_data: Optional[str] = None
 
@@ -3557,8 +3635,12 @@ class BibleReadBody(BaseModel):
 class BibleSettingsBody(BaseModel):
     user_id: int
     plan_id: str = Field(max_length=64)
-    notify_hour_msk: int = Field(ge=0, le=23)
-    notify_minute_msk: int = Field(default=0, ge=0, le=59)
+    notify_hour_msk: Optional[int] = Field(default=None, ge=0, le=23)
+    notify_minute_msk: Optional[int] = Field(default=None, ge=0, le=59)
+    # v1.5.6 — см. комментарий в BibleRegisterBody.
+    notify_hour: Optional[int] = Field(default=None, ge=0, le=23)
+    notify_minute: Optional[int] = Field(default=None, ge=0, le=59)
+    notify_tz: Optional[str] = Field(default=None, max_length=64)
     notify_on: bool
     init_data: Optional[str] = None
 
@@ -3588,6 +3670,30 @@ class StateBody(BaseModel):
     base_updated_at: Optional[str] = Field(default=None, max_length=64)
     init_data: Optional[str] = None
 
+def _resolve_notify_fields(body) -> dict:
+    """Нормализует время напоминания из register/settings в поля БД.
+    Приоритет: новые поля (notify_hour/notify_minute + notify_tz — локальное
+    время и IANA-пояс устройства); fallback — легаси notify_hour_msk/
+    notify_minute_msk (трактуются как МСК, как раньше). Возвращаемый
+    notify_hour_msk/notify_minute_msk с v1.5.6 означает «настенное время В
+    ПОЯСЕ notify_tz» (NULL пояса = Europe/Moscow). Невалидное имя пояса
+    молча превращается в None (= Москва): напоминание останется, просто без
+    учёта DST до следующего сохранения."""
+    h = body.notify_hour if body.notify_hour is not None else body.notify_hour_msk
+    m = body.notify_minute if body.notify_minute is not None else body.notify_minute_msk
+    if h is None:
+        h = 8
+    if m is None:
+        m = 0
+    tz_name = (body.notify_tz or "").strip() or None
+    if tz_name:
+        try:
+            ZoneInfo(tz_name)
+        except Exception:
+            log.warning(f"notify_tz: неизвестный пояс '{tz_name}' — сохраняю как МСК-легаси")
+            tz_name = None
+    return {"notify_hour_msk": int(h), "notify_minute_msk": int(m), "notify_tz": tz_name}
+
 # ── Endpoints: планы чтения ────────────────────────────────────
 # Все ниже — теперь на уровне (user_id, plan_id): пользователь может вести
 # несколько планов одновременно, каждый со своим прогрессом, стриком и
@@ -3600,6 +3706,8 @@ async def bible_register(request: Request, body: BibleRegisterBody):
     # Аккаунт создаётся ТОЛЬКО мутациями с валидной подписью (и вебхуком
     # «Старт») — GET /account/status с этой ревизии строк больше не создаёт.
     await sb_account_ensure(body.user_id)
+    notify_fields = _resolve_notify_fields(body)
+    tz_ok = await _notify_tz_available()
     payload = {
         "user_id": body.user_id,
         "plan_id": body.plan_id,
@@ -3607,12 +3715,17 @@ async def bible_register(request: Request, body: BibleRegisterBody):
         # 00:00 и 03:00 МСК давала вчерашний start_date — первое же
         # напоминание говорило «отстаёшь на 1 день» только что зарегистрировавшемуся.
         "start_date": datetime.now(MSK).date().isoformat(),
-        "notify_hour_msk": body.notify_hour_msk,
-        "notify_minute_msk": body.notify_minute_msk,
+        "notify_hour_msk": notify_fields["notify_hour_msk"],
+        "notify_minute_msk": notify_fields["notify_minute_msk"],
         "notify_on": body.notify_on,
         "streak": 0, "max_streak": 0,
         "last_read_date": None, "days_done": [],
     }
+    # Пояс пишем ТОЛЬКО если колонка есть и клиент его прислал: иначе
+    # (легаси-клиент) не трогаем колонку вовсе — чтобы не стереть ранее
+    # сохранённый пояс повторной регистрацией со старой вкладки.
+    if tz_ok and notify_fields["notify_tz"]:
+        payload["notify_tz"] = notify_fields["notify_tz"]
     if body.title:
         payload["title"] = body.title
     # КРИТИЧНО: merge-duplicates upsert перезаписал бы ВСЕ поля. Если клиент
@@ -3621,9 +3734,11 @@ async def bible_register(request: Request, body: BibleRegisterBody):
     # Для существующего плана обновляем только настройки уведомлений.
     existing = await sb_get_one(body.user_id, body.plan_id)
     if existing:
-        payload = {k: v for k, v in payload.items()
-                   if k in ("user_id", "plan_id", "title",
-                            "notify_hour_msk", "notify_minute_msk", "notify_on")}
+        keep = ("user_id", "plan_id", "title",
+                "notify_hour_msk", "notify_minute_msk", "notify_on")
+        if "notify_tz" in payload:
+            keep = keep + ("notify_tz",)
+        payload = {k: v for k, v in payload.items() if k in keep}
     ok, err = await sb_upsert(payload)
     if not ok:
         return {"ok": False, "error": err}
@@ -3899,11 +4014,15 @@ async def bible_set_days(request: Request, body: BibleSetDaysBody):
 @limiter.limit("30/minute")
 async def bible_settings(request: Request, body: BibleSettingsBody):
     _require_bible_user(body.user_id, body.init_data)
-    await sb_patch(body.user_id, body.plan_id, {
-        "notify_hour_msk": body.notify_hour_msk,
-        "notify_minute_msk": body.notify_minute_msk,
+    notify_fields = _resolve_notify_fields(body)
+    patch = {
+        "notify_hour_msk": notify_fields["notify_hour_msk"],
+        "notify_minute_msk": notify_fields["notify_minute_msk"],
         "notify_on": body.notify_on,
-    })
+    }
+    if await _notify_tz_available() and notify_fields["notify_tz"]:
+        patch["notify_tz"] = notify_fields["notify_tz"]
+    await sb_patch(body.user_id, body.plan_id, patch)
     return {"ok": True}
 
 # ── Endpoints: единый аккаунт (полное состояние приложения) ──
@@ -4418,7 +4537,7 @@ async def bible_send_reminders():
     now_msk = datetime.now(MSK)
     now_iso = now_msk.isoformat()
     cutoff_iso = (now_msk - timedelta(seconds=55)).isoformat()
-    users = await sb_get_due(now_msk.hour, now_msk.minute)
+    users = await sb_get_due(datetime.now(timezone.utc))
     _DIAG["tick_count"] += 1
     _DIAG["last_tick_at"] = now_iso
     _DIAG["last_tick_due"] = len(users) if isinstance(users, list) else -1
@@ -4494,8 +4613,8 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
     и не были отправлены. Правила:
     - окно CATCHUP_WINDOW_MIN минут: более старые пропуски сгорают;
     - «уже отправлено сегодня» проверяется по last_reminder_sent_at
-      (метка >= начала сегодняшних суток по МСК => пропускаем), поэтому
-      повторов не будет ни при каком числе пробуждений/деплоев;
+      (метка >= начала сегодняшних суток В ПОЯСЕ СТРОКИ => пропускаем),
+      поэтому повторов не будет ни при каком числе пробуждений/деплоев;
     - отправка идёт через тот же _claim_reminder_slot (атомарный claim на
       уровне БД) — гонки между догоняющей и обычной рассылкой безопасны;
     - текст строит та же _build_reminder_body, что и обычная рассылка;
@@ -4506,15 +4625,14 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
         return 0
     _DIAG["catchup_runs"] += 1
     _DIAG["last_catchup_at"] = now_msk.isoformat()
-    today = now_msk.date().isoformat()
-    today_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
-    now_min = now_msk.hour * 60 + now_msk.minute
+    await _notify_tz_available()
     rows = await _sb_fetch_all("plan_progress", {
         "notify_on": "eq.true",
-        "or": f"(last_read_date.is.null,last_read_date.neq.{today})",
+        "or": (f"(last_read_date.is.null,"
+               f"last_read_date.neq.{now_msk.date().isoformat()})"),
         "select": ("user_id,plan_id,title,streak,start_date,days_done,"
                    "last_read_date,last_reminder_sent_at,"
-                   "notify_hour_msk,notify_minute_msk"),
+                   "notify_hour_msk,notify_minute_msk" + _notify_tz_select()),
     })
     if not isinstance(rows, list):
         return 0
@@ -4525,19 +4643,25 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
     for u in rows:
       try:
         try:
-            h = int(u.get("notify_hour_msk") or 0)
-            m = int(u.get("notify_minute_msk") or 0)
+            h = int(u.get("notify_hour_msk"))  # NULL не матчится — как SQL eq.
+            m = int(u.get("notify_minute_msk"))
         except (TypeError, ValueError):
             continue
-        late_min = now_min - (h * 60 + m)
+        # v1.5.6: расписание строки — настенное время В ЕЁ ПОЯСЕ (notify_tz);
+        # «сегодня» и окно опоздания тоже считаем по поясу строки.
+        tz = _row_tz(u)
+        now_local = now_msk.astimezone(tz)
+        today_local = now_local.date().isoformat()
+        today_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        late_min = (now_local.hour * 60 + now_local.minute) - (h * 60 + m)
         if late_min < 0 or late_min > CATCHUP_WINDOW_MIN:
             continue
         raw_sent = u.get("last_reminder_sent_at")
         if raw_sent:
             try:
                 sent_at = _as_aware(datetime.fromisoformat(str(raw_sent).replace("Z", "+00:00")))
-                if sent_at >= today_start:
-                    continue  # сегодня уже отправляли — обычным тиком или прошлым пробуждением
+                if sent_at >= today_start_local:
+                    continue  # сегодня (в поясе строки) уже отправляли — тиком или прошлым пробуждением
             except Exception:
                 pass
         # День-0 строки (создан сегодня + ничего не отмечено) НЕ напоминаем
@@ -4548,7 +4672,7 @@ async def bible_catchup_missed(now_msk, mark_late: bool = True) -> int:
         # ВНИМАНИЕ: не «отпускать» слот таким строкам каждую минуту —
         # именно это 23.10.2026 зациклило отправку (release -> claim -> send
         # -> снова release на следующем забеге): спам «каждую минуту».
-        if (str(u.get("start_date") or "")[:10] == today
+        if (str(u.get("start_date") or "")[:10] == today_local
                 and not (u.get("days_done") or [])):
             continue
         claimed = await _claim_reminder_slot(u["user_id"], u["plan_id"], now_iso, cutoff_iso)
