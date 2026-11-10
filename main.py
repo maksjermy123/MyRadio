@@ -3860,6 +3860,25 @@ async def bible_read(request: Request, body: BibleReadBody):
     last = row.get("last_read_date")
     if last == today and body.day_number in (row.get("days_done") or []):
         return {"ok": True, "streak": _effective_streak(row), "already": True}
+    # v1.5.12: отложенная доставка из очереди bpend (клиент v1.5.15) может
+    # принести отметку со СТАРОЙ local_date: день отмечен вечером, долетел
+    # только утром — Render на free-тарифе просыпается 30-60 с, а вебвью
+    # могли закрыть раньше (кейс владельца 10.11: день 63 прочтён в 22:00,
+    # бэкенд увидел его в 9:05, утреннее напоминание в 9:00 уже обвинило
+    # в отставании и стрик сломался). Такая late-отметка — чистый бэкфилл:
+    # дописываем день в days_done, но НЕ трогаем стрик и last_read_date —
+    # они уже могут быть новее из-за прямых отметок следующих дней, и откат
+    # серии назад хуже честного бэкфилла.
+    try:
+        _mark_dt = date.fromisoformat(today)
+        _last_dt = date.fromisoformat(str(last)[:10]) if last else None
+    except ValueError:
+        _mark_dt = None
+        _last_dt = None
+    if _mark_dt and _last_dt and _mark_dt < _last_dt:
+        days_done = list(set((row.get("days_done") or []) + [body.day_number]))
+        await sb_patch(body.user_id, body.plan_id, {"days_done": days_done})
+        return {"ok": True, "streak": _effective_streak(row), "backfill": True}
     streak = row.get("streak", 0)
     if last == yesterday:
         streak += 1
@@ -4513,10 +4532,26 @@ def _build_reminder_body(u: dict):
         else:
             body = (f"⏳ «{title}»: ждёт тебя уже {age_days} {_ru_day_word(age_days)}.\n"
                     f"Не обязательно догонять график — просто открой и прочитай один отрывок сегодня.")
+    elif lag == 1:
+        # v1.5.12: ровно один «долг» — почти всегда вчерашний день, отметка
+        # которого ещё не долетела (вечернюю сессию закрыли раньше, чем
+        # проснулся Render) либо день действительно прочитан на день позже
+        # графика. Строгого «⚠️ отстаёшь» здесь быть не должно: кейс
+        # владельца 10.11.2026 — день прочитан вечером в 22:00, утреннее
+        # напоминание в 9:00 обвинило в отставании, хотя позиция чтения
+        # (день 63) совпадала с подсказкой в самом сообщении. Мягкий текст
+        # без «отставания», с тем же конкретным resume_day; математику лага
+        # (бейдж аппа, виджет, /users) не трогаем.
+        resume_day = _next_unread_day(_calendar_day(u), u.get("days_done"))
+        body = (
+            f"📅 «{title}»: время читать Библию\n"
+            f"Вчерашний день ещё не отмечен — ничего страшного. "
+            f"Продолжай с дня {resume_day}, и график снова сойдётся!"
+        )
     elif lag > 0:
-        # Отстаёт от графика: подсказываем КОНКРЕТНЫЙ день, с которого
-        # продолжать — он совпадает с тем, куда ведёт кнопка «Открыть план»
-        # (позиция чтения = первый непрочитанный день всего плана).
+        # Отстаёт от графика на 2+ дней: подсказываем КОНКРЕТНЫЙ день, с
+        # которого продолжать — он совпадает с тем, куда ведёт кнопка
+        # «Открыть план» (позиция чтения = первый непрочитанный день плана).
         word = _ru_day_word(lag)
         resume_day = _next_unread_day(_calendar_day(u), u.get("days_done"))
         body = (
