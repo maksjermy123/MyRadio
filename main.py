@@ -1738,6 +1738,103 @@ async def verify(request: VerifyRequest):
     return {"allowed": True, "reason": "subscription_check_disabled"}
 
 
+# ── Гейт вкладки «Радио»: подписка на канал ────────────────────
+# Решение владельца (11.2026): Оглавление и План открыты ВСЕМ, вкладка
+# «Радио» — только подписчикам канала CHANNEL_ID. Логика возвращена из
+# истории (проверенный /verify до коммита 24914ba) с двумя дополнениями:
+# (1) кэш в памяти, чтобы переключение вкладок не молотило getChatMember;
+# (2) fail-open на СБОИ СРЕДЫ (Telegram API недоступен/ошибка ответа/бот
+#     не состоит в канале) — радио не должно «кирпичиться» из-за нашей
+#     инфраструктуры; отказ ставится ТОЛЬКО по однозначному ответу
+#     Telegram о статусе пользователя (left/kicked/не участник).
+
+_SUB_CACHE_TTL_OK   = 300.0   # подписчик: 5 минут
+_SUB_CACHE_TTL_DENY = 60.0    # не подписчик: минута (кнопка «проверить» реально перепроверяет)
+_sub_cache: dict = {}         # user_id -> (allowed, monotonic_ts, status)
+
+
+def _sub_status_to_allowed(status: str, is_member_flag) -> bool:
+    """member/administrator/creator — подписчики; restricted — участник под
+    ограничением (мут): остаётся подписчиком при is_member=true (старый
+    фильтр давал ему ложный отказ); left/kicked — не подписчик."""
+    if status in {"member", "administrator", "creator"}:
+        return True
+    if status == "restricted":
+        return bool(is_member_flag)
+    return False
+
+
+@app.post("/sub/check")
+async def sub_check(request: VerifyRequest):
+    """Проверка подписки ДЛЯ ГЕЙТА ВКЛАДКИ «Радио». Отдельно от /verify:
+    старые кэшированные клиенты при загрузке зовут /verify и ждут
+    allowed:true — их поведение не меняем, чтобы никого не заблокировать
+    целиком до хард-перезагрузки аппа."""
+    if not BOT_TOKEN:
+        raise HTTPException(500, "BOT_TOKEN not configured")
+    if not CHANNEL_ID:
+        raise HTTPException(500, "CHANNEL_ID not configured")
+    if not request.init_data:
+        raise HTTPException(403, "Missing init data")
+    payload = verify_telegram_init_data(request.init_data, BOT_TOKEN,
+                                        max_age_seconds=INIT_DATA_MAX_AGE_SECONDS)
+    if payload is None:
+        raise HTTPException(403, "Invalid init data")
+    user_id = (payload.get("user") or {}).get("id")
+    if not user_id:
+        raise HTTPException(403, "No user id")
+
+    now = time.monotonic()
+    hit = _sub_cache.get(user_id)
+    if hit is not None:
+        ttl = _SUB_CACHE_TTL_OK if hit[0] else _SUB_CACHE_TTL_DENY
+        if now - hit[1] < ttl:
+            return {"allowed": hit[0], "status": hit[2], "cached": True}
+
+    resp = None
+    async with _http(10.0) as client:
+        for attempt in range(2):
+            resp = await client.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+                params={"chat_id": CHANNEL_ID, "user_id": user_id})
+            if resp.status_code == 429 and attempt == 0:
+                try:
+                    ra = resp.json().get("parameters", {}).get("retry_after")
+                except Exception:
+                    ra = None
+                if isinstance(ra, int) and 0 < ra <= 2:
+                    await asyncio.sleep(ra)
+                    continue
+            break
+
+    # ── сбои среды: fail-open (не блокируем радио из-за нашей инфраструктуры)
+    if resp is None:
+        log.error("sub_check: нет ответа Telegram API — fail-open")
+        return {"allowed": True, "reason": "no_response"}
+    if resp.status_code != 200:
+        log.error(f"sub_check: http_{resp.status_code} от Telegram API — fail-open")
+        return {"allowed": True, "reason": f"http_{resp.status_code}"}
+    try:
+        data = resp.json()
+    except Exception:
+        log.error("sub_check: некорректный JSON от Telegram API — fail-open")
+        return {"allowed": True, "reason": "bad_json"}
+    if not data.get("ok"):
+        desc = str(data.get("description", "api_error"))
+        # Бот не состоит в канале / канал не найден — НАША конфигурация, не
+        # статус пользователя: fail-open и громкий лог, чтобы заметить.
+        log.error(f"sub_check: Telegram API отказал ({desc}) — fail-open")
+        return {"allowed": True, "reason": desc[:120]}
+
+    result = data.get("result") or {}
+    status = result.get("status", "")
+    allowed = _sub_status_to_allowed(status, result.get("is_member"))
+    if len(_sub_cache) > 10000:
+        _sub_cache.clear()
+    _sub_cache[user_id] = (allowed, now, status)
+    return {"allowed": allowed, "status": status}
+
+
 def _verify_webhook_secret(request: Request) -> bool:
     """Единственное, что реально подтверждает, что POST на /webhook или
     /webhook/bible пришёл от Telegram, а не от кого угодно, кто узнал URL.

@@ -48,6 +48,14 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 .br:disabled{opacity:.5;cursor:default}
 .rm{font-size:12px;color:var(--muted);min-height:16px;font-style:italic}
 
+/* ── Гейт вкладки «Радио» (только подписчики канала) ── */
+#radio-gate{display:none;text-align:center;padding:30px 18px 26px}
+#radio-gate .rg-ico{font-size:46px;line-height:1;margin-bottom:12px}
+#radio-gate .rg-title{font-family:'Source Serif 4',Georgia,serif;font-size:20px;font-weight:600;color:var(--text2);margin-bottom:8px}
+#radio-gate .rg-txt{font-size:14px;color:var(--text2);line-height:1.6;max-width:290px;margin:0 auto 20px}
+#radio-gate .rg-btns{display:flex;flex-direction:column;gap:10px;align-items:center}
+#radio-gate .rg-btns .bs,#radio-gate .rg-btns .br{margin:0}
+
 /* ── MAIN ── */
 #ms{display:none}
 #ms.vis{display:block}
@@ -331,8 +339,21 @@ input[type=range].vs::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
         </div>
       </div>
     </div>
-    <div class="stn-sec-lbl">Выберите станцию</div>
-    <div class="stns" id="stn-list"></div>
+    <!-- Гейт вкладки «Радио»: только подписчики канала (Оглавление и План открыты всем).
+         Показывается/прячется из radioEnter(); контент вкладки — в #radio-body. -->
+    <div id="radio-gate" style="display:none">
+      <div class="rg-ico">🔒</div>
+      <div class="rg-title">Радио — только для подписчиков</div>
+      <div class="rg-txt" id="rg-txt">Подпишитесь на канал «От чтения к Преображению» — и радио откроется.</div>
+      <div class="rg-btns">
+        <a href="https://t.me/Chtenie_Preobrazenie" class="bs" id="rg-sub" target="_blank">🌿 Подписаться на канал</a>
+        <button class="br" id="rg-re" onclick="recheckRadioSub()">✓ Я подписался — проверить</button>
+      </div>
+    </div>
+    <div id="radio-body">
+      <div class="stn-sec-lbl">Выберите станцию</div>
+      <div class="stns" id="stn-list"></div>
+    </div>
     <div class="player-spacer" id="radio-spacer" style="display:none"></div>
     <div class="toast" id="toast"></div>
   </div>
@@ -473,9 +494,83 @@ function switchTab(tab){
     document.getElementById('tb-'+t).classList.toggle('active',t===tab);
   });
   if (tab==='toc'&&!tocData) loadTOC();
-  if (tab==='radio') renderStns();
+  if (tab==='radio') radioEnter();
   if (tab==='plan'&&!planLoaded) loadPlan();
   updBack();
+}
+
+/* ── ГЕЙТ ВКЛАДКИ «РАДИО»: только подписчики канала ──
+   Решение владельца (11.2026): Оглавление и План открыты ВСЕМ, Радио —
+   подписчикам канала «От чтения к Преображению». Проверка ленивая — при
+   входе на вкладку; положительный результат кэшируется в sessionStorage
+   на 30 минут (на бэкенде свой кэш /sub/check). Отказ СРЕДЫ (сеть, спящий
+   Render, недоступный Telegram API) радио не блокирует — бэкенд на сбои
+   отвечает allowed:true (fail-open); клиентская сетевая ошибка даёт экран
+   «проверить ещё раз». Отказ приходит ТОЛЬКО по однозначному ответу
+   Telegram: пользователь left/kicked/не участник. */
+var SUB_OK_KEY='radio_sub_ok_v1';
+var radioSub={checking:false,allowed:false};
+function subOkCached(){
+  if(radioSub.allowed) return true;
+  try{
+    var v=JSON.parse(sessionStorage.getItem(SUB_OK_KEY)||'null');
+    if(v&&v.ok&&(Date.now()-(v.t||0))<30*60*1000){radioSub.allowed=true;return true;}
+  }catch(e){}
+  return false;
+}
+function radioGateShow(state){ /* 'check' | 'deny' | 'err' */
+  var g=document.getElementById('radio-gate'),b=document.getElementById('radio-body');
+  if(!g||!b) return;
+  var txt=document.getElementById('rg-txt'),re=document.getElementById('rg-re');
+  if(state==='check'){
+    txt.textContent='Проверяю подписку…';
+    re.style.display='none';
+  }else if(state==='deny'){
+    txt.textContent='Подпишитесь на канал «От чтения к Преображению» — и радио откроется.';
+    re.style.display='block';re.disabled=false;
+  }else{
+    txt.textContent='Не удалось проверить подписку. Проверьте интернет и попробуйте ещё раз.';
+    re.style.display='block';re.disabled=false;
+  }
+  g.style.display='block';
+  b.style.display='none';
+}
+function radioGateHide(){
+  var g=document.getElementById('radio-gate'),b=document.getElementById('radio-body');
+  if(g)g.style.display='none';
+  if(b)b.style.display='block';
+}
+function checkRadioSub(cb){
+  /* таймаут 20с: Render free может просыпаться до ~30с (обычно держит
+     UptimeRobot, но первый вход после сна — самый долгий) */
+  fetchT(BACKEND+'/sub/check',{method:'POST',headers:{'Content-Type':'application/json'},timeout:20000,body:JSON.stringify({init_data:(tg&&tg.initData)||''})})
+    .then(function(r){return r.json();})
+    .then(function(d){cb(d&&d.allowed===true);})
+    .catch(function(){cb(null);});
+}
+function radioEnter(){
+  if(subOkCached()){radioGateHide();renderStns();return;}
+  radioGateShow('check');
+  if(radioSub.checking) return;
+  radioSub.checking=true;
+  checkRadioSub(function(res){
+    radioSub.checking=false;
+    if(res===true){
+      radioSub.allowed=true;
+      try{sessionStorage.setItem(SUB_OK_KEY,JSON.stringify({ok:true,t:Date.now()}));}catch(e){}
+      radioGateHide();renderStns();
+    }else if(res===false){
+      radioGateShow('deny');
+    }else{
+      radioGateShow('err');
+    }
+  });
+}
+function recheckRadioSub(){
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+  radioSub.allowed=false;
+  try{sessionStorage.removeItem(SUB_OK_KEY);}catch(e){}
+  radioEnter();
 }
 function updBack(){
   if(!tg) return;
