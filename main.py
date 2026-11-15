@@ -91,7 +91,15 @@ try:
     DISCUSSION_CHAT_ID        = int(os.environ.get("DISCUSSION_CHAT_ID", "-1002557846325"))
 except ValueError:
     DISCUSSION_CHAT_ID        = -1002557846325
-INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "86400"))
+# 7 суток вместо 24 часов: клавиатурная web_app-кнопка initData НЕ передаёт,
+# фронт bible-bot (v1.5.17) шлёт отметки дней из кэша последнего валидного
+# initData (localStorage 'init_data_v1'). Подпись initData постоянна (HMAC
+# токеном бота) и со временем не «портится» — лимит давности лишь ограничивает
+# окно повторного использования кэша. 24 ч ломали сценарий «утром открыл план
+# через клавиатурную кнопку, инлайн-кнопку уведомления давно не жал»
+# (кейс владельца 15.11.2026: день прочтён в 7:30, в 9:00 напоминание
+# назвало его непрочитанным — отметка застряла в очереди без подписи).
+INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("INIT_DATA_MAX_AGE_SECONDS", "604800"))
 GITHUB_TOKEN              = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO               = os.environ.get("GITHUB_REPO", "maksjermy123/MyRadio")
 GITHUB_BRANCH             = os.environ.get("GITHUB_BRANCH", "main")
@@ -1631,7 +1639,7 @@ async def handle_user_message(message: dict):
 
 # Маркер сборки: виден в / и в /diag/plans — по нему удалённо проверяем,
 # что Render задеплоил именно эту ревизию (кэш/сон/не тот URL и т.п.).
-BUILD_MARKER = "notify-tz-2026-10-23"
+BUILD_MARKER = "initdata-cache-2026-11-15"
 
 # Сердцебиение планировщика (in-memory, живёт и умирает вместе с процессом).
 # Назначение — УДАЛЁННО ответить на вопрос «а тикает ли планировщик вообще?»:
